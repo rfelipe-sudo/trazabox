@@ -5,12 +5,14 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:open_file/open_file.dart';
+import 'package:trazabox/config/supabase_config.dart';
 
-/// Servicio para verificar e instalar actualizaciones desde GitHub Releases
+/// Servicio para verificar e instalar actualizaciones desde Supabase Storage
 class UpdateService {
-  // GitHub repository for auto-updates
-  static const String _githubRepo = 'karimpichara/trazabox';
-  static const String _apiUrl = 'https://api.github.com/repos';
+  // Supabase bucket para actualizaciones (debe ser público)
+  static const String _bucketName = 'app-updates';
+  static const String _versionFile = 'version.json';
+  static const String _apkFile = 'trazabox.apk';
 
   final Dio _dio = Dio();
 
@@ -22,50 +24,33 @@ class UpdateService {
 
       print('📦 Versión actual: ${packageInfo.version}+$currentVersionCode');
 
-      // Obtener el último release de GitHub
-      final response = await _dio.get(
-        '$_apiUrl/$_githubRepo/releases/latest',
-        options: Options(headers: {'Accept': 'application/vnd.github.v3+json'}),
-      );
+      // Obtener archivo de versión desde Supabase Storage
+      final versionUrl = '${SupabaseConfig.supabaseUrl}/storage/v1/object/public/$_bucketName/$_versionFile';
+
+      final response = await _dio.get(versionUrl);
 
       if (response.statusCode != 200) {
-        print('⚠️ Error obteniendo releases: ${response.statusCode}');
+        print('⚠️ Error obteniendo versión: ${response.statusCode}');
         return null;
       }
 
       final data = response.data;
-      final tagName = data['tag_name'] as String?;
-      final releaseNotes = data['body'] as String?;
-      final assets = data['assets'] as List?;
+      final latestVersionCode = data['versionCode'] as int? ?? 0;
+      final versionName = data['versionName'] as String? ?? 'Unknown';
+      final releaseNotes = data['releaseNotes'] as String? ?? 'Nueva versión disponible';
+      final fileSize = data['fileSize'] as int? ?? 0;
 
-      if (tagName == null || assets == null) {
-        print('⚠️ Release sin tag o assets');
-        return null;
-      }
+      print('🔄 Última versión en Supabase: $versionName (code: $latestVersionCode)');
 
-      // Buscar el APK en los assets
-      final apkAsset = assets.cast<Map>().firstWhere(
-        (asset) => (asset['name'] as String).endsWith('.apk'),
-        orElse: () => <String, dynamic>{},
-      );
+      if (latestVersionCode > currentVersionCode) {
+        final downloadUrl = '${SupabaseConfig.supabaseUrl}/storage/v1/object/public/$_bucketName/$_apkFile';
 
-      if (apkAsset.isEmpty) {
-        print('⚠️ No se encontró APK en el release');
-        return null;
-      }
-
-      // Extraer versionCode del tag (formato: v1.0.0+5 o 1.0.0+5)
-      final versionCode = _extractVersionCode(tagName);
-
-      print('🔄 Última versión en GitHub: $tagName (code: $versionCode)');
-
-      if (versionCode > currentVersionCode) {
         return UpdateInfo(
-          versionName: tagName,
-          versionCode: versionCode,
-          downloadUrl: apkAsset['browser_download_url'] as String,
-          releaseNotes: releaseNotes ?? 'Nueva versión disponible',
-          fileSize: (apkAsset['size'] as int?) ?? 0,
+          versionName: versionName,
+          versionCode: latestVersionCode,
+          downloadUrl: downloadUrl,
+          releaseNotes: releaseNotes,
+          fileSize: fileSize,
         );
       }
 
@@ -75,16 +60,6 @@ class UpdateService {
       print('❌ Error verificando actualizaciones: $e');
       return null;
     }
-  }
-
-  /// Extrae el versionCode de un tag (v1.0.0+5 -> 5)
-  int _extractVersionCode(String tag) {
-    // Formatos soportados: v1.0.0+5, 1.0.0+5, v1.0.0-5
-    final match = RegExp(r'[+\-](\d+)$').firstMatch(tag);
-    if (match != null) {
-      return int.tryParse(match.group(1)!) ?? 0;
-    }
-    return 0;
   }
 
   /// Descarga el APK y retorna la ruta del archivo
