@@ -61,6 +61,12 @@ dependencies:
   
   # Info del dispositivo (Android ID)
   device_info_plus: ^11.2.1
+
+  # Info del paquete (versión de la app)
+  package_info_plus: ^8.1.2
+
+  # Instalar APK
+  open_file: ^3.5.10
   
   # Formateo de fechas
   intl: ^0.20.1

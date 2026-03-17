@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:trazabox/services/update_service.dart';
 import 'home_screen.dart';
 
 // ─── Paleta ──────────────────────────────────────────────────────────────────
@@ -113,8 +114,27 @@ class _SplashScreenState extends State<SplashScreen>
     });
   }
 
-  void _navegar() {
+  void _navegar() async {
     if (!mounted) return;
+
+    // Verificar actualizaciones antes de navegar
+    try {
+      final updateService = UpdateService();
+      final updateInfo = await updateService.checkForUpdate();
+
+      if (updateInfo != null && mounted) {
+        // Hay actualización disponible, mostrar diálogo
+        final shouldUpdate = await showUpdateDialog(context, updateInfo);
+        // Si el usuario actualiza, la app se cerrará para instalar
+        // Si dice "después", continuamos normalmente
+      }
+    } catch (e) {
+      print('⚠️ Error verificando actualizaciones: $e');
+      // Continuar aunque falle la verificación
+    }
+
+    if (!mounted) return;
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (_, __, ___) => const HomeScreen(),
