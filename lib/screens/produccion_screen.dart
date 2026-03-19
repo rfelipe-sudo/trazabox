@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/produccion_service.dart';
-import '../services/nyquist_service.dart';
 import '../models/metrica_produccion.dart';
 import '../widgets/creaciones_loading.dart';
 
@@ -16,7 +15,6 @@ class ProduccionScreen extends StatefulWidget {
 
 class _ProduccionScreenState extends State<ProduccionScreen> {
   final ProduccionService _service = ProduccionService();
-  final NyquistService _nyquistService = NyquistService();
   Map<String, dynamic> _resumenMes = {};
   List<Map<String, dynamic>> _detalleDiario = [];
   Map<String, dynamic> _rankingData = {};
@@ -61,8 +59,12 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
     _tecnicoRut = prefs.getString('rut_tecnico');
     
     if (_tecnicoRut != null) {
-      // Obtener tipo de red del técnico (en paralelo con el resumen)
-      _nyquistService.obtenerTipoRedTecnico(_tecnicoRut!).then((tipo) {
+      // Obtener tecnología desde produccion (columna tecnologia: HFC, FTTH, RED_NEUTRA)
+      _service.obtenerTipoRedProductoDesdeProduccion(
+        _tecnicoRut!,
+        mes: _mesSeleccionado.month,
+        anno: _mesSeleccionado.year,
+      ).then((tipo) {
         if (mounted && tipo != null) setState(() => _tipoRedProducto = tipo);
       });
 
@@ -160,10 +162,12 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
             Text(
               'BONO DE PRODUCCIÓN ${nombreMesBono.toUpperCase()}',
               style: const TextStyle(fontSize: 16),
-          overflow: TextOverflow.ellipsis,
+              overflow: TextOverflow.ellipsis,
             ),
             Text(
-              '01/$nombreMes - $diasMes/$nombreMes',
+              _resumenMes['tieneHfc'] == true
+                  ? '${((_resumenMes['totalRGU'] as num?) ?? 0).toStringAsFixed(2)} RGU • ${((_resumenMes['ptosHfc'] as num?) ?? 0).toStringAsFixed(2)} PTS (HFC)'
+                  : '01/$nombreMes - $diasMes/$nombreMes',
               style: const TextStyle(fontSize: 11, color: Colors.white70),
             ),
           ],
@@ -259,43 +263,71 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                       ),
                                     ),
                                   ),
-                                // Promedio RGU - CORREGIDO
+                                // Promedio RGU (o RGU+PTS cuando hay HFC)
                                 Text(
                                   (_resumenMes['promedioRGU'] != null)
-                                      ? (_resumenMes['promedioRGU'] as num).toStringAsFixed(1)
-                                      : '0.0',
+                                      ? (_resumenMes['promedioRGU'] as num).toStringAsFixed(2)
+                                      : '0.00',
                                   style: const TextStyle(
                                     fontSize: 48,
                                     fontWeight: FontWeight.bold,
                                     color: Colors.white,
                                   ),
                                 ),
-                                const Text(
-                                  'RGU/día',
-                                  style: TextStyle(
+                                Text(
+                                  (_resumenMes['tieneHfc'] == true)
+                                      ? 'RGU/día (${_resumenMes['diasRgu'] ?? 0} días)'
+                                      : 'RGU/día',
+                                  style: const TextStyle(
                                     fontSize: 16,
                                     color: Colors.white70,
                                   ),
                                 ),
+                                if (_resumenMes['tieneHfc'] == true) ...[
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    (_resumenMes['promedioPts'] != null)
+                                        ? (_resumenMes['promedioPts'] as num).toStringAsFixed(2)
+                                        : '0.00',
+                                    style: TextStyle(
+                                      fontSize: 32,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.orange[300],
+                                    ),
+                                  ),
+                                  Text(
+                                    'PTS/día (${_resumenMes['diasHfc'] ?? 0} días)',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.orange[200],
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 24),
-                                // Total RGU y Órdenes (centrados y lado a lado)
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
+                                // Total RGU, PTS (si hay HFC) y Órdenes
+                                Wrap(
+                                  alignment: WrapAlignment.center,
+                                  spacing: 16,
+                                  runSpacing: 4,
                                   children: [
                                     Text(
-                                      'Total: ${(_resumenMes['totalRGU'] as num?)?.toInt() ?? 0} RGU',
+                                      'Total: ${((_resumenMes['totalRGU'] as num?) ?? 0).toStringAsFixed(2)} RGU',
                                       style: const TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.w600,
                                         color: Colors.white,
                                       ),
                                     ),
-                                    Container(
-                                      height: 20,
-                                      width: 1,
-                                      margin: const EdgeInsets.symmetric(horizontal: 16),
-                                      color: Colors.white.withOpacity(0.3),
-                                    ),
+                                    if (_resumenMes['tieneHfc'] == true) ...[
+                                      Text(
+                                        'Total HFC: ${((_resumenMes['ptosHfc'] as num?) ?? 0).toStringAsFixed(2)} PTS',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.orange[300],
+                                        ),
+                                      ),
+                                    ],
                                     Text(
                                       'Órdenes: ${_resumenMes['ordenesCompletadas'] ?? 0}',
                                       style: const TextStyle(
@@ -306,30 +338,35 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                     ),
                                   ],
                                 ),
-                                // Desglose por tecnología (solo contrato antiguo)
-                                if ((_resumenMes['tipoContrato']?.toString() ?? 'nuevo') == 'antiguo') ...[
+                                // Desglose por tecnología (contrato antiguo o cuando hay HFC)
+                                if ((_resumenMes['tipoContrato']?.toString() ?? 'nuevo') == 'antiguo' ||
+                                    _resumenMes['tieneHfc'] == true) ...[
                                   const SizedBox(height: 12),
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      _buildTecnoChipBono(
-                                        'RED NEUTRA',
-                                        '${((_resumenMes['rguRedNeutra'] as num?)?.toInt() ?? 0)} RGU',
-                                        Colors.blue[300]!,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      _buildTecnoChipBono(
-                                        'HFC',
-                                        '${((_resumenMes['ptosHfc'] as num?)?.toInt() ?? 0)} PTS',
-                                        Colors.orange[300]!,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      _buildTecnoChipBono(
-                                        'FTTH',
-                                        '${((_resumenMes['rguFtth'] as num?)?.toInt() ?? 0)} RGU',
-                                        Colors.purple[300]!,
-                                      ),
-                                    ],
+                                  SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        _buildTecnoChipBono(
+                                          'RED NEUTRA',
+                                          '${((_resumenMes['rguRedNeutra'] as num?) ?? 0).toStringAsFixed(2)} RGU',
+                                          Colors.blue[300]!,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildTecnoChipBono(
+                                          'HFC',
+                                          '${((_resumenMes['ptosHfc'] as num?) ?? 0).toStringAsFixed(2)} PTS',
+                                          Colors.orange[300]!,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildTecnoChipBono(
+                                          'FTTH',
+                                          '${((_resumenMes['rguFtth'] as num?) ?? 0).toStringAsFixed(2)} RGU',
+                                          Colors.purple[300]!,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ],
                                 const SizedBox(height: 16),
@@ -408,10 +445,13 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                   // Tecnologías presentes en el día
                                   final tecnologiasDia = (dia['tecnologias'] as List?)?.cast<String>() ?? [];
                                   final tieneMultiTecno = tecnologiasDia.length > 1;
+                                  final soloHfc = tecnologiasDia.length == 1 && tecnologiasDia.contains('HFC');
+                                  final tieneHfc = _resumenMes['tieneHfc'] == true;
                                   final tipoContrato = _resumenMes['tipoContrato']?.toString() ?? 'nuevo';
                                   final rguNeutraDia = (dia['rguRedNeutra'] as num?)?.toDouble() ?? 0.0;
                                   final ptosHfcDia = (dia['ptosHfc'] as num?)?.toDouble() ?? 0.0;
                                   final rguFtthDia = (dia['rguFtth'] as num?)?.toDouble() ?? 0.0;
+                                  final rguTotalDia = (dia['rguTotal'] as num?)?.toDouble() ?? 0.0;
 
                                   return Card(
                                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -442,21 +482,71 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                                 style: const TextStyle(color: Colors.white70, fontSize: 14),
                                               ),
                                               const SizedBox(width: 16),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                                                decoration: BoxDecoration(
-                                                  color: _colorPrincipal.withOpacity(0.3),
-                                                  borderRadius: BorderRadius.circular(12),
+                                              if (tieneHfc && soloHfc)
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: (ptosHfcDia == 0 && rguTotalDia > 0)
+                                                        ? _colorPrincipal.withOpacity(0.3)
+                                                        : Colors.orange.withOpacity(0.3),
+                                                    borderRadius: BorderRadius.circular(12),
+                                                  ),
+                                                  child: Text(
+                                                    ptosHfcDia == 0 && rguTotalDia > 0
+                                                        ? '${_formatRGU(rguTotalDia)} RGU'
+                                                        : '${ptosHfcDia.toStringAsFixed(0)} PTS',
+                                                    style: ptosHfcDia == 0 && rguTotalDia > 0
+                                                        ? const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)
+                                                        : TextStyle(color: Colors.orange[300], fontWeight: FontWeight.bold),
+                                                  ),
+                                                )
+                                              else if (tieneHfc && tieneMultiTecno)
+                                                Wrap(
+                                                  spacing: 8,
+                                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                                  children: [
+                                                    if (rguTotalDia > 0)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                        decoration: BoxDecoration(
+                                                          color: _colorPrincipal.withOpacity(0.3),
+                                                          borderRadius: BorderRadius.circular(12),
+                                                        ),
+                                                        child: Text(
+                                                          '${_formatRGU(rguTotalDia)} RGU',
+                                                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                                        ),
+                                                      ),
+                                                    if (ptosHfcDia > 0)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                        decoration: BoxDecoration(
+                                                          color: Colors.orange.withOpacity(0.3),
+                                                          borderRadius: BorderRadius.circular(12),
+                                                        ),
+                                                        child: Text(
+                                                          '${ptosHfcDia.toStringAsFixed(0)} PTS',
+                                                          style: TextStyle(color: Colors.orange[300], fontWeight: FontWeight.bold, fontSize: 13),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                )
+                                              else
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: _colorPrincipal.withOpacity(0.3),
+                                                    borderRadius: BorderRadius.circular(12),
+                                                  ),
+                                                  child: Text(
+                                                    '${_formatRGU(rguTotalDia)} RGU',
+                                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                                  ),
                                                 ),
-                                                child: Text(
-                                                  '${_formatRGU((dia['rguTotal'] as num).toDouble())} RGU',
-                                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                                ),
-                                              ),
                                             ],
                                           ),
-                                          // Desglose por tecnología (contrato antiguo o multi-tecno)
-                                          if (tipoContrato == 'antiguo' || tieneMultiTecno) ...[
+                                          // Desglose por tecnología (contrato antiguo o multi-tecno o tiene HFC)
+                                          if (tipoContrato == 'antiguo' || tieneMultiTecno || tieneHfc) ...[
                                             const SizedBox(height: 6),
                                             Wrap(
                                               spacing: 6,
@@ -476,7 +566,11 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                       children: ordenesDetalle.map((orden) {
                                         final ot = orden['orden_trabajo']?.toString() ?? '';
                                         final tipo = orden['tipo_orden']?.toString() ?? '';
-                                        final tecno = _tipoRedProducto ?? orden['tecnologia']?.toString() ?? 'RED_NEUTRA';
+                                        // Priorizar tecnologia (normalizada); tipo_red_producto es crudo
+                                        final tecno = _tipoRedProducto ??
+                                            orden['tecnologia']?.toString() ??
+                                            orden['tipo_red_producto']?.toString() ??
+                                            'RED_NEUTRA';
                                         final rguBase = (orden['rgu_base'] as num?)?.toDouble() ?? 0;
                                         final rguAdicional = (orden['rgu_adicional'] as num?)?.toDouble() ?? 0;
                                         final rguOrden = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
@@ -574,9 +668,13 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                                   const SizedBox(width: 8),
                                                   if (tecno == 'HFC')
                                                     Text(
-                                                      '${ptsHfcOrden.toStringAsFixed(0)} PTS',
+                                                      ptsHfcOrden == 0 && rguOrden > 0
+                                                          ? '${_formatRGU(rguOrden)} RGU'
+                                                          : '${ptsHfcOrden.toStringAsFixed(0)} PTS',
                                                       style: TextStyle(
-                                                        color: Colors.orange[300],
+                                                        color: ptsHfcOrden == 0 && rguOrden > 0
+                                                            ? Colors.white
+                                                            : Colors.orange[300],
                                                         fontWeight: FontWeight.bold,
                                                         fontSize: 14,
                                                       ),
@@ -924,7 +1022,7 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                               children: [
                                 Text(
                                   // Usar el promedio del resumen individual con mismo redondeo que la card
-                                  ((_resumenMes?['promedioRGU'] ?? _rankingData['promedioRGU'] ?? 0) as num).toDouble().toStringAsFixed(1),
+                                  ((_resumenMes?['promedioRGU'] ?? _rankingData['promedioRGU'] ?? 0) as num).toDouble().toStringAsFixed(2),
                                   style: const TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.bold,
@@ -1003,7 +1101,7 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                               // Para la fila propia, formatear igual que la card (toStringAsFixed → redondea)
                               // _formatPromedio trunca, lo que puede dar 2.7 en vez de 2.8
                               final promedioTexto = esYo
-                                  ? promedioRGU.toStringAsFixed(1)
+                                  ? promedioRGU.toStringAsFixed(2)
                                   : null; // null = usar _formatPromedio del widget
 
                               return Container(
@@ -1915,6 +2013,7 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                       final fecha = dia['fecha']?.toString() ?? '';
                                       final minutos = (dia['horasExtrasMin'] as num?)?.toInt() ?? 0;
                                       final esSabado = dia['esSabado'] as bool? ?? false;
+                                      final ordenTrabajo = dia['ordenTrabajo']?.toString() ?? '';
                                       final horaFin = dia['horaFin']?.toString() ?? '';
 
                                       final partes = fecha.split('/');
@@ -1926,8 +2025,9 @@ class _ProduccionScreenState extends State<ProduccionScreen> {
                                         fechaFormateada = '$fechaFormateada (Sáb)';
                                       }
 
-                                      final detallesLinea =
-                                          'Última finalización: ${horaFin.isNotEmpty ? horaFin : '-'}';
+                                      final detallesLinea = ordenTrabajo.isNotEmpty
+                                          ? 'OT: $ordenTrabajo'
+                                          : (horaFin.isNotEmpty ? 'Última finalización: $horaFin' : '-');
 
                                       return Container(
                                         margin: const EdgeInsets.only(bottom: 10),

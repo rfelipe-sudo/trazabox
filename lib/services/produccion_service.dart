@@ -23,6 +23,32 @@ class ProduccionService {
   final _supabase = Supabase.instance.client;
   final _marcasService = KrpMarcasService();
 
+  /// Filtro para órdenes que cuentan como producción: Completado OR (No Realizada + GSA) OR (No Realizada + REDES)
+  static const String _filtroProduccionEstado =
+      'estado.eq.Completado,and(estado.eq.No Realizada,area_derivacion.eq.GSA),and(estado.eq.No Realizada,area_derivacion.eq.REDES)';
+
+  /// Prioridad de estado para deduplicación (menor = mejor). Completado primero, luego No Realizada+GSA/REDES.
+  static int prioridadEstado(dynamic orden) {
+    if (orden is! Map) return 99;
+    final o = orden as Map<String, dynamic>;
+    final e = (o['estado']?.toString() ?? '').trim().toUpperCase();
+    final a = (o['area_derivacion']?.toString() ?? '').trim().toUpperCase();
+    if (e == 'COMPLETADO') return 0;
+    if (e == 'NO REALIZADA' && (a == 'GSA' || a == 'REDES')) return 1;
+    return 2;
+  }
+
+  /// Indica si una orden de produccion cuenta como producción (RGU/completadas)
+  /// Completado O (No Realizada + GSA) O (No Realizada + REDES)
+  static bool cuentaComoProduccion(dynamic orden) {
+    if (orden is! Map) return false;
+    final o = orden as Map<String, dynamic>;
+    final e = (o['estado']?.toString() ?? '').trim().toUpperCase();
+    final a = (o['area_derivacion']?.toString() ?? '').trim().toUpperCase();
+    return e == 'COMPLETADO' ||
+        (e == 'NO REALIZADA' && (a == 'GSA' || a == 'REDES'));
+  }
+
   // ═══════════════════════════════════════════════════════════
   // OBTENER Y PROCESAR SABANA
   // ═══════════════════════════════════════════════════════════
@@ -827,13 +853,43 @@ class ProduccionService {
     }
   }
 
+  /// Clave normalizada para agrupar por día (DD-MM-YYYY). Evita perder días por formato distinto.
+  String? _fechaClave(String fechaStr) {
+    final partes = _partirFecha(fechaStr);
+    if (partes == null) return null;
+    var anno = int.tryParse(partes[2]) ?? 0;
+    if (anno < 100) anno = 2000 + anno;
+    return '${partes[0].padLeft(2, '0')}-${partes[1].padLeft(2, '0')}-$anno';
+  }
+
   /// Normaliza una fecha de fecha_trabajo y retorna las partes [dia, mes, anno]
-  /// Soporta: "DD/MM/YY", "DD/MM/YYYY", "DD.MM.YY", "DD.MM.YYYY"
+  /// Soporta: "DD/MM/YY", "DD/MM/YYYY", "DD.MM.YY", "DD.MM.YYYY", "YYYY-MM-DD", "DD-MM-YYYY"
   List<String>? _partirFecha(String fechaStr) {
-    final normalizada = fechaStr.replaceAll('.', '/');
+    final s = fechaStr.trim();
+    // Formato ISO: YYYY-MM-DD
+    final isoMatch = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})').firstMatch(s);
+    if (isoMatch != null) {
+      return [isoMatch.group(3)!, isoMatch.group(2)!, isoMatch.group(1)!];
+    }
+    // Formato DD-MM-YYYY (clave normalizada)
+    final dmyMatch = RegExp(r'^(\d{1,2})-(\d{1,2})-(\d{4})$').firstMatch(s);
+    if (dmyMatch != null) {
+      return [dmyMatch.group(1)!, dmyMatch.group(2)!, dmyMatch.group(3)!];
+    }
+    final normalizada = s.replaceAll('.', '/');
     final partes = normalizada.split('/');
     if (partes.length != 3) return null;
     return partes;
+  }
+
+  /// Indica si una fecha (día, mes, año) es sábado
+  bool _esSabado(int dia, int mes, int anno) {
+    try {
+      final dt = DateTime(anno, mes, dia);
+      return dt.weekday == 6; // 6 = Sábado en Dart
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Convierte período de formato "YYYY-MM" a "MM-YYYY"
@@ -844,6 +900,123 @@ class ProduccionService {
       return '${partes[1]}-${partes[0]}'; // "2026-03" → "03-2026"
     }
     return periodo;
+  }
+
+  /// Variantes de RUT para búsqueda (evita perder datos por formato: 12345678-9 vs 12.345.678-9)
+  static List<String> rutVariantes(String rut) {
+    final s = (rut ?? '').toString().trim();
+    if (s.isEmpty) return [];
+    final sinPuntos = s.replaceAll('.', '');
+    final partes = sinPuntos.split('-');
+    if (partes.length < 2) return [s];
+    final run = partes[0];
+    final dv = partes.sublist(1).join('-');
+    final conGuion = '$run-$dv';
+    // Formato con puntos: 12.345.678-9
+    String conPuntos = conGuion;
+    if (run.length > 3) {
+      final chars = run.split('');
+      final grupos = <String>[];
+      for (var i = chars.length; i > 0; i -= 3) {
+        final start = (i - 3).clamp(0, chars.length);
+        grupos.insert(0, chars.sublist(start, i).join());
+      }
+      conPuntos = grupos.join('.') + '-$dv';
+    }
+    final variantes = <String>{s, conGuion, conPuntos};
+    return variantes.where((v) => v.isNotEmpty).toList();
+  }
+
+  /// Evalúa si es_reiterado indica reiteración (acepta bool, int 1, "true", "SI")
+  static bool _esReiterado(dynamic val) {
+    if (val == null) return false;
+    if (val == true || val == 1) return true;
+    final s = val.toString().trim().toUpperCase();
+    return s == 'TRUE' || s == 'SI' || s == 'YES' || s == '1';
+  }
+
+  /// Total de órdenes completadas en produccion para rut y mes.
+  /// Usa búsqueda híbrida (RUT + nombre) y filtro por mes igual que obtenerResumenMesRGU.
+  /// periodo puede ser "YYYY-MM" o "MM-YYYY".
+  Future<int> _obtenerTotalProduccionMes(String rut, String periodo) async {
+    try {
+      final partes = periodo.split('-');
+      if (partes.length != 2) return 0;
+      int mesConsulta;
+      int annoConsulta;
+      if (partes[0].length == 4) {
+        annoConsulta = int.tryParse(partes[0]) ?? 0;
+        mesConsulta = int.tryParse(partes[1]) ?? 0;
+      } else {
+        mesConsulta = int.tryParse(partes[0]) ?? 0;
+        annoConsulta = int.tryParse(partes[1]) ?? 0;
+      }
+      if (mesConsulta < 1 || mesConsulta > 12) return 0;
+
+      // 1. Por RUT (múltiples formatos)
+      final variantesRut = rutVariantes(rut);
+      List<dynamic> respRut = [];
+      if (variantesRut.isNotEmpty) {
+        respRut = await _supabase
+            .from('produccion')
+            .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
+            .inFilter('rut_tecnico', variantesRut)
+            .limit(10000) as List;
+      }
+
+      // 2. Por nombre (datos legacy; ilike = case-insensitive)
+      String? nombreTecnico;
+      try {
+        final tecnico = await _supabase
+            .from('tecnicos_traza_zc')
+            .select('nombre_completo')
+            .eq('rut', rut)
+            .maybeSingle();
+        nombreTecnico = tecnico?['nombre_completo']?.toString()?.trim();
+      } catch (_) {}
+
+      List<dynamic> respNombre = [];
+      if (nombreTecnico != null && nombreTecnico.isNotEmpty) {
+        try {
+          respNombre = await _supabase
+              .from('produccion')
+              .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
+              .ilike('tecnico', nombreTecnico)
+              .limit(10000) as List;
+        } catch (_) {
+          respNombre = await _supabase
+              .from('produccion')
+              .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
+              .eq('tecnico', nombreTecnico)
+              .limit(10000) as List;
+        }
+      }
+
+      // 3. Combinar, ordenar (Completado primero), deduplicar y filtrar por mes
+      final combinadas = [...(respRut as List), ...respNombre];
+      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
+
+      final Map<String, dynamic> ordenesMap = {};
+      for (var orden in combinadas) {
+        final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
+        final partesFecha = _partirFecha(fechaStr);
+        if (partesFecha == null) continue;
+        var mesOrden = int.tryParse(partesFecha[1]) ?? 0;
+        var annoOrden = int.tryParse(partesFecha[2]) ?? 0;
+        if (annoOrden < 100) annoOrden = 2000 + annoOrden;
+        if (mesOrden != mesConsulta || annoOrden != annoConsulta) continue;
+
+        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
+        if (ordenId.isEmpty) continue;
+        final key = '$ordenId-$fechaStr';
+        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
+      }
+
+      return ordenesMap.values.where((r) => cuentaComoProduccion(r)).length;
+    } catch (e) {
+      print('❌ [Calidad] Error total produccion: $e');
+      return 0;
+    }
   }
 
   /// Obtener resumen del mes con datos de RGU desde Supabase
@@ -906,14 +1079,19 @@ class ProduccionService {
       // BÚSQUEDA HÍBRIDA: Por RUT y por NOMBRE (fix para datos legacy)
       // ═══════════════════════════════════════════════════════════════════
       
-      // 1️⃣ Buscar por RUT (método principal)
-      final responseRut = await _supabase
-          .from('produccion')
-          .select()
-          .eq('rut_tecnico', rutTecnico);
+      // 1️⃣ Buscar por RUT (múltiples formatos: 12345678-9, 12.345.678-9)
+      final variantesRut = rutVariantes(rutTecnico);
+      List<dynamic> ordenesPorRut = [];
+      if (variantesRut.isNotEmpty) {
+        final responseRut = await _supabase
+            .from('produccion')
+            .select()
+            .inFilter('rut_tecnico', variantesRut)
+            .limit(10000); // Evitar truncación (default 1000)
 
-      List<dynamic> ordenesPorRut = responseRut as List? ?? [];
-      print('🔍 [Produccion] Órdenes por RUT ($rutTecnico): ${ordenesPorRut.length}');
+        ordenesPorRut = responseRut as List? ?? [];
+      }
+      print('🔍 [Produccion] Órdenes por RUT ($rutTecnico, variantes: $variantesRut): ${ordenesPorRut.length}');
 
       // 2️⃣ Obtener el nombre del técnico desde tecnicos_traza_zc
       String? nombreTecnico;
@@ -925,45 +1103,49 @@ class ProduccionService {
             .maybeSingle();
         
         if (tecnicoResponse != null) {
-          nombreTecnico = tecnicoResponse['nombre_completo']?.toString();
+          nombreTecnico = tecnicoResponse['nombre_completo']?.toString()?.trim();
+          if (nombreTecnico != null && nombreTecnico.isEmpty) nombreTecnico = null;
           print('👤 [Produccion] Nombre del técnico: $nombreTecnico');
         }
       } catch (e) {
         print('⚠️ [Produccion] Error obteniendo nombre del técnico: $e');
       }
 
-      // 3️⃣ Buscar también por NOMBRE (para datos legacy con RUT incorrecto)
+      // 3️⃣ Buscar también por NOMBRE (datos legacy; ilike = case-insensitive)
       List<dynamic> ordenesPorNombre = [];
       if (nombreTecnico != null && nombreTecnico.isNotEmpty) {
-        final responseNombre = await _supabase
-            .from('produccion')
-            .select()
-            .eq('tecnico', nombreTecnico);
-        
-        ordenesPorNombre = responseNombre as List? ?? [];
-        print('🔍 [Produccion] Órdenes por NOMBRE ($nombreTecnico): ${ordenesPorNombre.length}');
+        try {
+          final responseNombre = await _supabase
+              .from('produccion')
+              .select()
+              .ilike('tecnico', nombreTecnico)
+              .limit(10000); // Evitar truncación (default 1000)
+          
+          ordenesPorNombre = responseNombre as List? ?? [];
+          print('🔍 [Produccion] Órdenes por NOMBRE (ilike "$nombreTecnico"): ${ordenesPorNombre.length}');
+        } catch (e) {
+          // Fallback a eq si ilike falla
+          final resp = await _supabase
+              .from('produccion')
+              .select()
+              .eq('tecnico', nombreTecnico)
+              .limit(10000);
+          ordenesPorNombre = resp as List? ?? [];
+        }
       }
 
-      // 4️⃣ Combinar y deduplicar — priorizar estado 'Completado' sobre duplicados
-      // Si el mismo orden_trabajo aparece como Cancelado Y Completado, queda Completado
-      final Map<String, dynamic> ordenesMap = {};
+      // 4️⃣ Combinar y deduplicar — SIEMPRE priorizar Completado sobre Suspendido/otros
+      final combinadas = [...ordenesPorRut, ...ordenesPorNombre];
+      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
 
-      for (var orden in [...ordenesPorRut, ...ordenesPorNombre]) {
-        final ordenId = orden['orden_trabajo']?.toString() ?? '';
+      final Map<String, dynamic> ordenesMap = {};
+      for (var orden in combinadas) {
+        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
         if (ordenId.isEmpty) continue;
         final fechaTrabajo = orden['fecha_trabajo']?.toString() ?? '';
         final key = '$ordenId-$fechaTrabajo';
-
-        if (!ordenesMap.containsKey(key)) {
-          ordenesMap[key] = orden;
-        } else {
-          // Si la nueva versión es Completado y la actual no lo es, reemplazar
-          final esCompletado = orden['estado']?.toString() == 'Completado';
-          final actualCompletado = ordenesMap[key]['estado']?.toString() == 'Completado';
-          if (esCompletado && !actualCompletado) {
-            ordenesMap[key] = orden;
-          }
-        }
+        // Primera que vemos gana (ya ordenadas: Completado primero)
+        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
       }
 
       final List<dynamic> todasOrdenes = ordenesMap.values.toList();
@@ -990,6 +1172,10 @@ class ProduccionService {
         return {
           'totalRGU': 0.0,
           'promedioRGU': 0.0,
+          'promedioPts': 0.0,
+          'tieneHfc': false,
+          'diasRgu': 0,
+          'diasHfc': 0,
           'tipoContrato': tipoContrato,
           // Desglose por tecnología (contrato antiguo)
           'rguRedNeutra': 0.0,
@@ -1013,13 +1199,14 @@ class ProduccionService {
         };
       }
 
-      // Agrupar órdenes por fecha para análisis detallado
+      // Agrupar órdenes por fecha (clave normalizada DD-MM-YYYY para no perder días por formato)
       Map<String, List<dynamic>> ordenesPorFecha = {};
       for (var orden in ordenesMes) {
-        final fecha = orden['fecha_trabajo']?.toString() ?? '';
-        if (fecha.isNotEmpty) {
-          ordenesPorFecha.putIfAbsent(fecha, () => []);
-          ordenesPorFecha[fecha]!.add(orden);
+        final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
+        final clave = _fechaClave(fechaStr);
+        if (clave != null) {
+          ordenesPorFecha.putIfAbsent(clave, () => []);
+          ordenesPorFecha[clave]!.add(orden);
         }
       }
 
@@ -1034,6 +1221,9 @@ class ProduccionService {
       double rguFtth = 0;
       Set<String> diasConProduccion = {};
       List<Map<String, dynamic>> diasPX0List = [];
+      // Cuando existe HFC: días con RGU (NFTT/FTTH) vs días con HFC
+      int diasRgu = 0;
+      int diasHfc = 0;
 
       for (var entry in ordenesPorFecha.entries) {
         final fecha = entry.key;
@@ -1041,25 +1231,40 @@ class ProduccionService {
 
         int completadasDia = 0;
         double rguDia = 0;
+        double ptsHfcDia = 0;
+        bool tieneRguDia = false;
+        bool tieneHfcDia = false;
 
         for (var orden in ordenesDelDia) {
           final estado = orden['estado']?.toString() ?? '';
 
-          if (estado == 'Completado') {
+          if (cuentaComoProduccion(orden)) {
             completadas++;
             completadasDia++;
             final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+            // Usar tecnologia (HFC, FTTH, RED_NEUTRA); tipo_red_producto es crudo (CHFC, CFTT, NFTT)
+            final tecno = (orden['tecnologia']?.toString().trim().isNotEmpty == true
+                    ? orden['tecnologia']?.toString()
+                    : null) ??
+                'RED_NEUTRA';
+
+            // Total RGU = suma de TODOS los rgu_total (incluye HFC si tiene puntos en rgu_total)
             totalRGU += rgu;
             rguDia += rgu;
+            tieneRguDia = tieneRguDia || rgu > 0;
 
-            // Acumular por tecnología
-            final tecno = orden['tecnologia']?.toString() ?? 'RED_NEUTRA';
-            if (tecno == 'HFC') {
-              ptosHfc += (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
-            } else if (tecno == 'FTTH') {
-              rguFtth += rgu;
+            if (tecno.toUpperCase() == 'HFC') {
+              if (((orden['puntos_hfc'] as num?)?.toDouble() ?? 0) > 0) {
+                ptosHfc += (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
+                ptsHfcDia += (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
+                tieneHfcDia = true;
+              } else if (((orden['rgu_total'] as num?)?.toDouble() ?? 0) > 0) {
+                rguFtth += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+              }
+            } else if (tecno.toUpperCase() == 'FTTH') {
+              rguFtth += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
             } else {
-              rguRedNeutra += rgu;
+              rguRedNeutra += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
             }
           } else if (estado == 'Cancelado') {
             canceladas++;
@@ -1067,6 +1272,9 @@ class ProduccionService {
             noRealizadas++;
           }
         }
+
+        if (tieneRguDia) diasRgu++;
+        if (tieneHfcDia) diasHfc++;
 
         if (completadasDia > 0) {
           diasConProduccion.add(fecha);
@@ -1135,10 +1343,14 @@ class ProduccionService {
         print('   - Feriados: $feriadosFinales (de GeoVictoria)');
       }
 
-      // Promedio RGU/día = total RGU / días trabajados (GeoVictoria o producción)
+      // Promedio RGU/día y PTS/día (cuando hay HFC, promedios por tipo de día)
+      final tieneHfc = ptosHfc > 0;
       final diasConProd = diasConProduccion.length;
       final divisor = diasTrabajados > 0 ? diasTrabajados : (diasConProd > 0 ? diasConProd : 1);
-      final promedioRGU = totalRGU / divisor;
+      final promedioRGU = tieneHfc
+          ? (diasRgu > 0 ? totalRGU / diasRgu : 0.0)
+          : totalRGU / divisor;
+      final promedioPts = tieneHfc && diasHfc > 0 ? ptosHfc / diasHfc : 0.0;
       
       print('📊 [Produccion] CÁLCULO PROMEDIO:');
       print('   - Total RGU: $totalRGU');
@@ -1175,6 +1387,10 @@ class ProduccionService {
       return {
         'totalRGU': totalRGU,
         'promedioRGU': promedioRGU,
+        'promedioPts': promedioPts,
+        'tieneHfc': tieneHfc,
+        'diasRgu': diasRgu,
+        'diasHfc': diasHfc,
         'tipoContrato': tipoContrato,
         // Desglose por tecnología (se usa cuando tipo_contrato == 'antiguo')
         'rguRedNeutra': rguRedNeutra,
@@ -1202,6 +1418,10 @@ class ProduccionService {
       return {
         'totalRGU': 0.0,
         'promedioRGU': 0.0,
+        'promedioPts': 0.0,
+        'tieneHfc': false,
+        'diasRgu': 0,
+        'diasHfc': 0,
         'tipoContrato': 'nuevo',
         'rguRedNeutra': 0.0,
         'ptosHfc': 0.0,
@@ -1240,14 +1460,17 @@ class ProduccionService {
       // BÚSQUEDA HÍBRIDA: Por RUT y por NOMBRE (fix para datos legacy)
       // ═══════════════════════════════════════════════════════════════════
       
-      // 1️⃣ Buscar por RUT
-      final responseRut = await _supabase
-          .from('produccion')
-          .select()
-          .eq('rut_tecnico', rutTecnico)
-          .eq('estado', 'Completado');
-
-      List<dynamic> ordenesPorRut = responseRut as List? ?? [];
+      // 1️⃣ Buscar por RUT (múltiples formatos)
+      final variantesRut = rutVariantes(rutTecnico);
+      List<dynamic> ordenesPorRut = [];
+      if (variantesRut.isNotEmpty) {
+        final responseRut = await _supabase
+            .from('produccion')
+            .select()
+            .inFilter('rut_tecnico', variantesRut)
+            .limit(10000);
+        ordenesPorRut = responseRut as List? ?? [];
+      }
 
       // 2️⃣ Obtener nombre del técnico
       String? nombreTecnico;
@@ -1259,38 +1482,46 @@ class ProduccionService {
             .maybeSingle();
         
         if (tecnicoResponse != null) {
-          nombreTecnico = tecnicoResponse['nombre_completo']?.toString();
+          nombreTecnico = tecnicoResponse['nombre_completo']?.toString()?.trim();
+          if (nombreTecnico != null && nombreTecnico.isEmpty) nombreTecnico = null;
         }
       } catch (e) {
         print('⚠️ [Detalle] Error obteniendo nombre del técnico: $e');
       }
 
-      // 3️⃣ Buscar también por NOMBRE
+      // 3️⃣ Buscar también por NOMBRE (ilike = case-insensitive)
       List<dynamic> ordenesPorNombre = [];
       if (nombreTecnico != null && nombreTecnico.isNotEmpty) {
-        final responseNombre = await _supabase
-            .from('produccion')
-            .select()
-            .eq('tecnico', nombreTecnico)
-            .eq('estado', 'Completado');
-        
-        ordenesPorNombre = responseNombre as List? ?? [];
-      }
-
-      // 4️⃣ Combinar y deduplicar
-      final Set<String> ordenesVistas = {};
-      final List<dynamic> todasOrdenes = [];
-
-      for (var orden in [...ordenesPorRut, ...ordenesPorNombre]) {
-        final ordenId = orden['orden_trabajo']?.toString() ?? '';
-        final fechaTrabajo = orden['fecha_trabajo']?.toString() ?? '';
-        final key = '$ordenId-$fechaTrabajo';
-        
-        if (ordenId.isNotEmpty && !ordenesVistas.contains(key)) {
-          ordenesVistas.add(key);
-          todasOrdenes.add(orden);
+        try {
+          final responseNombre = await _supabase
+              .from('produccion')
+              .select()
+              .ilike('tecnico', nombreTecnico)
+              .limit(10000);
+          ordenesPorNombre = responseNombre as List? ?? [];
+        } catch (_) {
+          final resp = await _supabase
+              .from('produccion')
+              .select()
+              .eq('tecnico', nombreTecnico)
+              .limit(10000);
+          ordenesPorNombre = resp as List? ?? [];
         }
       }
+
+      // 4️⃣ Combinar y deduplicar — SIEMPRE priorizar Completado sobre Suspendido/otros
+      final combinadas = [...ordenesPorRut, ...ordenesPorNombre];
+      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
+
+      final Map<String, dynamic> ordenesMap = {};
+      for (var orden in combinadas) {
+        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
+        if (ordenId.isEmpty) continue;
+        final fechaTrabajo = orden['fecha_trabajo']?.toString() ?? '';
+        final key = '$ordenId-$fechaTrabajo';
+        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
+      }
+      final todasOrdenes = ordenesMap.values.toList();
 
       // Filtrar por mes y año — soporta DD/MM/YY y DD.MM.YY
       final ordenesMes = todasOrdenes.where((orden) {
@@ -1305,21 +1536,30 @@ class ProduccionService {
         return mesOrden == mesConsulta && annoOrden == annoConsulta;
       }).toList();
 
-      // Filtro adicional en Dart para asegurar solo completadas
-      final ordenesCompletadas = ordenesMes.where((orden) {
-        return orden['estado']?.toString() == 'Completado';
-      }).toList();
+      // DEBUG TEMPORAL: febrero 2026, rut 11222678-8
+      if (mesConsulta == 2 && annoConsulta == 2026 && rutTecnico.contains('11222678')) {
+        debugPrint('🔍 [DetalleRGU] Febrero 2026, rut $rutTecnico: ${ordenesMes.length} órdenes después de filtrar por mes/año');
+        final ordenBuscada = ordenesMes.where((o) => (o['orden_trabajo']?.toString() ?? '').trim() == '1-3I01E0U7').toList();
+        debugPrint('🔍 [DetalleRGU] Orden 1-3I01E0U7 ${ordenBuscada.isEmpty ? "NO está" : "SÍ está"} en la lista');
+        if (ordenBuscada.isNotEmpty) {
+          debugPrint('🔍 [DetalleRGU] Orden 1-3I01E0U7: fecha_trabajo=${ordenBuscada.first['fecha_trabajo']}, estado=${ordenBuscada.first['estado']}, rgu_total=${ordenBuscada.first['rgu_total']}, puntos_hfc=${ordenBuscada.first['puntos_hfc']}');
+        }
+      }
 
-      // Agrupar por día (usar solo órdenes completadas)
+      // Filtro adicional: Completado o No Realizada+GSA
+      final ordenesCompletadas = ordenesMes.where((o) => cuentaComoProduccion(o)).toList();
+
+      // Agrupar por día con clave normalizada (evita perder día 16 por formato distinto)
       Map<String, Map<String, dynamic>> porDia = {};
 
       for (var orden in ordenesCompletadas) {
-        final fecha = orden['fecha_trabajo']?.toString() ?? '';
-        if (fecha.isEmpty) continue;
+        final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
+        final clave = _fechaClave(fechaStr);
+        if (clave == null) continue;
 
-        if (!porDia.containsKey(fecha)) {
-          porDia[fecha] = {
-            'fecha': fecha,
+        if (!porDia.containsKey(clave)) {
+          porDia[clave] = {
+            'fecha': fechaStr.isNotEmpty ? fechaStr : clave,
             'ordenesCompletadas': 0,
             'rguTotal': 0.0,
             // Desglose por tecnología
@@ -1332,27 +1572,37 @@ class ProduccionService {
         }
 
         final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
-        final tecno = orden['tecnologia']?.toString() ?? 'RED_NEUTRA';
+        // Usar tecnologia (HFC, FTTH, RED_NEUTRA); tipo_red_producto es crudo (CHFC, CFTT, NFTT)
+        final tecno = (orden['tecnologia']?.toString().trim().isNotEmpty == true
+                ? orden['tecnologia']?.toString()
+                : null) ??
+            'RED_NEUTRA';
         final ptsHfc = (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
 
-        porDia[fecha]!['ordenesCompletadas'] = (porDia[fecha]!['ordenesCompletadas'] as int) + 1;
-        porDia[fecha]!['rguTotal'] = (porDia[fecha]!['rguTotal'] as double) + rgu;
+        porDia[clave]!['ordenesCompletadas'] = (porDia[clave]!['ordenesCompletadas'] as int) + 1;
+        // RGU total = suma de rgu_total de TODAS las órdenes (para que coincida con detalle)
+        porDia[clave]!['rguTotal'] = (porDia[clave]!['rguTotal'] as double) + rgu;
 
         // Acumular por tecnología
-        (porDia[fecha]!['tecnologias'] as Set<String>).add(tecno);
-        if (tecno == 'HFC') {
-          porDia[fecha]!['ptosHfc'] = (porDia[fecha]!['ptosHfc'] as double) + ptsHfc;
-        } else if (tecno == 'FTTH') {
-          porDia[fecha]!['rguFtth'] = (porDia[fecha]!['rguFtth'] as double) + rgu;
+        (porDia[clave]!['tecnologias'] as Set<String>).add(tecno);
+        if (tecno.toUpperCase() == 'HFC') {
+          if (((orden['puntos_hfc'] as num?)?.toDouble() ?? 0) > 0) {
+            porDia[clave]!['ptosHfc'] = (porDia[clave]!['ptosHfc'] as double) + ((orden['puntos_hfc'] as num?)?.toDouble() ?? 0);
+          } else if (((orden['rgu_total'] as num?)?.toDouble() ?? 0) > 0) {
+            porDia[clave]!['rguFtth'] = (porDia[clave]!['rguFtth'] as double) + ((orden['rgu_total'] as num?)?.toDouble() ?? 0);
+          }
+        } else if (tecno.toUpperCase() == 'FTTH') {
+          porDia[clave]!['rguFtth'] = (porDia[clave]!['rguFtth'] as double) + rgu;
         } else {
-          porDia[fecha]!['rguRedNeutra'] = (porDia[fecha]!['rguRedNeutra'] as double) + rgu;
+          porDia[clave]!['rguRedNeutra'] = (porDia[clave]!['rguRedNeutra'] as double) + rgu;
         }
 
-        // Agregar detalle de la orden
-        (porDia[fecha]!['ordenes'] as List<Map<String, dynamic>>).add({
+        // Agregar detalle de la orden (tecnologia = columna normalizada)
+        (porDia[clave]!['ordenes'] as List<Map<String, dynamic>>).add({
           'orden_trabajo': orden['orden_trabajo'],
           'tipo_orden': orden['tipo_orden'],
           'tecnologia': tecno,
+          'tipo_red_producto': orden['tipo_red_producto'],
           'rgu_base': (orden['rgu_base'] as num?)?.toDouble() ?? 0,
           'rgu_adicional': (orden['rgu_adicional'] as num?)?.toDouble() ?? 0,
           'rgu_total': rgu,
@@ -1483,19 +1733,31 @@ class ProduccionService {
 
     final mesStr = mesConsulta.toString().padLeft(2, '0');
     final annoStr = (annoConsulta % 100).toString().padLeft(2, '0');
+    final annoStr4 = annoConsulta.toString();
 
     print('🔍 [Ranking] Calculando desde produccion — mes: $mesConsulta/$annoConsulta');
 
     try {
-      // Filtrar por mes/año usando el patrón de fecha almacenada ("DD/MM/YY" o "DD.MM.YY")
+      // Filtrar por mes/año (DD/MM/YY, DD/MM/YYYY, DD.MM.YY, DD.MM.YYYY, YYYY-MM-DD); traer Completado y No Realizada (GSA se filtra en cliente)
+      final filtroFecha = [
+        'fecha_trabajo.like.%/$mesStr/$annoStr',
+        'fecha_trabajo.like.%/$mesStr/$annoStr4',
+        'fecha_trabajo.like.%.$mesStr.$annoStr',
+        'fecha_trabajo.like.%.$mesStr.$annoStr4',
+        'fecha_trabajo.like.%$annoStr4-$mesStr-%', // YYYY-MM-DD
+      ].join(',');
+      // Sin filtro de estado en servidor: traer todas las órdenes del mes y filtrar en cliente
+      // (evita perder datos por variaciones de casing: Completado vs COMPLETADO, etc.)
       final response = await _supabase
           .from('produccion')
-          .select('rut_tecnico, tecnico, rgu_total, fecha_trabajo')
-          .or('fecha_trabajo.like.%/$mesStr/$annoStr,fecha_trabajo.like.%.$mesStr.$annoStr')
-          .eq('estado', 'Completado')
+          .select('rut_tecnico, tecnico, rgu_total, fecha_trabajo, estado, area_derivacion')
+          .or(filtroFecha)
           .limit(10000); // Evitar truncación del default de Supabase (1000)
 
-      final ordenes = List<Map<String, dynamic>>.from(response as List);
+      final ordenes = (response as List)
+          .where((o) => cuentaComoProduccion(o))
+          .map((o) => o as Map<String, dynamic>)
+          .toList();
       print('🔍 [Ranking] Órdenes del mes encontradas: ${ordenes.length}');
 
       if (ordenes.isEmpty) {
@@ -1587,10 +1849,12 @@ class ProduccionService {
 
     print('🎯 [Posicion] Ranking tiene ${ranking.length} técnicos');
 
-    // Buscar al técnico
+    // Buscar al técnico (comparar con variantes de RUT por si la BD tiene otro formato)
+    final variantesRut = rutVariantes(rutTecnico);
     Map<String, dynamic>? tecnicoEncontrado;
     for (var t in ranking) {
-      if (t['rut'] == rutTecnico) {
+      final rutRanking = (t['rut'] ?? '').toString().trim();
+      if (rutRanking == rutTecnico || variantesRut.contains(rutRanking)) {
         tecnicoEncontrado = t;
         break;
       }
@@ -1769,75 +2033,60 @@ class ProduccionService {
         }
       }
 
-      // Horas extras (vista v_tiempos_tecnicos): minutos posteriores a 18:30 L-V o 15:00 Sáb
-      // Horario: 9:45 a 18:30 (L-V) o 10:00 a 15:00 (Sáb)
+      // Horas extras desde tabla horas_extras (con orden_trabajo)
       try {
-        // Usamos select('*') para no fallar si cambian los nombres de columnas
         final extrasResponse = await _supabase
-            .from('v_tiempos_tecnicos')
+            .from('horas_extras')
             .select('*')
             .eq('rut_tecnico', rutTecnico)
-            .gt('horas_extras_min', 0)
             .order('fecha_trabajo', ascending: false);
 
         final extras = List<Map<String, dynamic>>.from(extrasResponse as List);
 
-        // Candidatos de nombres de campos para hora fin
-        const horaFinKeys = [
-          'hora_fin',
-          'hora_termino',
-          'hora_fin_orden',
-          'hora_fin_real',
-        ];
+        // Columna de minutos: minutos, horas_extras_min o cantidad_minutos
+        int _minutosDeItem(Map<String, dynamic> item) {
+          final m = item['minutos'] ?? item['horas_extras_min'] ?? item['cantidad_minutos'];
+          if (m == null) return 0;
+          return (m is num) ? m.toInt() : int.tryParse(m.toString()) ?? 0;
+        }
 
         // Agrupar por semana
         Map<String, List<Map<String, dynamic>>> porSemana = {};
 
         for (final item in extras) {
-          final fechaStr = item['fecha_trabajo']?.toString() ?? '';
+          final fechaStr = (item['fecha_trabajo'] ?? item['fecha'])?.toString() ?? '';
           final partes = _partirFecha(fechaStr);
           if (partes == null) continue;
 
           final diaRegistro = int.tryParse(partes[0]) ?? 0;
           final mesRegistro = int.tryParse(partes[1]) ?? 0;
           var annoRegistro = int.tryParse(partes[2]) ?? 0;
-          
-          // Convertir año de 2 dígitos a 4 dígitos (26 → 2026)
-          if (annoRegistro < 100) {
-            annoRegistro = 2000 + annoRegistro;
-          }
-          
+          if (annoRegistro < 100) annoRegistro = 2000 + annoRegistro;
+
           if (mesRegistro != mesConsulta || annoRegistro != annoConsulta) continue;
 
-          final minutos = (item['horas_extras_min'] as num?)?.toInt() ?? 0;
+          final minutos = _minutosDeItem(item);
+          if (minutos <= 0) continue;
+
           horasExtrasTotal += minutos;
 
-          // Tomar horaFin de la vista; si no viene, usar fallback de la última orden completada del día
-          String horaFin = _pickFirstNonEmpty(item, horaFinKeys);
-          if (horaFin.isEmpty) {
-            horaFin = ultimaHoraFinPorDia[fechaStr] ?? '';
-          }
+          final ordenTrabajo = item['orden_trabajo']?.toString() ?? '';
+          final esSabado = _esSabado(diaRegistro, mesRegistro, annoRegistro);
 
-          // Determinar semana: del 1-7, 8-14, 15-21, 22-28, 29-31
           int semanaNum = 1;
-          if (diaRegistro <= 7) {
-            semanaNum = 1;
-          } else if (diaRegistro <= 14) {
-            semanaNum = 2;
-          } else if (diaRegistro <= 21) {
-            semanaNum = 3;
-          } else if (diaRegistro <= 28) {
-            semanaNum = 4;
-          } else {
-            semanaNum = 5;
-          }
+          if (diaRegistro <= 7) semanaNum = 1;
+          else if (diaRegistro <= 14) semanaNum = 2;
+          else if (diaRegistro <= 21) semanaNum = 3;
+          else if (diaRegistro <= 28) semanaNum = 4;
+          else semanaNum = 5;
 
           final claveSemana = 'semana_$semanaNum';
           porSemana.putIfAbsent(claveSemana, () => []).add({
             'fecha': fechaStr,
             'horasExtrasMin': minutos,
-            'esSabado': item['es_sabado'] as bool? ?? false,
-            'horaFin': horaFin,
+            'esSabado': esSabado,
+            'horaFin': '',
+            'ordenTrabajo': ordenTrabajo,
             'dia': diaRegistro,
             'mes': mesRegistro,
             'anno': annoRegistro,
@@ -2099,6 +2348,72 @@ class ProduccionService {
   /// MÉTODOS PARA CALIDAD (basados en garantías que terminan el día 20)
   /// ═══════════════════════════════════════════════════════════════════════════
   
+  /// Obtiene tecnología desde produccion. Usa columna tecnologia (HFC, FTTH, RED_NEUTRA).
+  /// tipo_red_producto es crudo de Kepler (CHFC, CFTT, NFTT) y no debe usarse para lógica.
+  Future<String?> obtenerTipoRedProductoDesdeProduccion(
+    String rutTecnico, {
+    int? mes,
+    int? anno,
+  }) async {
+    try {
+      final now = DateTime.now();
+      final mesConsulta = mes ?? now.month;
+      final annoConsulta = anno ?? now.year;
+      final yy = annoConsulta.toString().substring(2);
+      final yy4 = annoConsulta.toString();
+      final mm = mesConsulta.toString().padLeft(2, '0');
+      final sufPunto = '.$mm.$yy';
+      final sufBarra = '/$mm/$yy';
+      final sufPunto4 = '.$mm.$yy4';
+      final sufBarra4 = '/$mm/$yy4';
+      final sufIso = '$yy4-$mm-%';
+
+      final response = await _supabase
+          .from('produccion')
+          .select('tipo_red_producto, tecnologia')
+          .eq('rut_tecnico', rutTecnico)
+          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4,fecha_trabajo.like.%$sufIso')
+          .order('fecha_trabajo', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (response == null) return null;
+      final tecnologia = response['tecnologia']?.toString().trim();
+      if (tecnologia != null && tecnologia.isNotEmpty) {
+        return tecnologia;
+      }
+      return response['tipo_red_producto']?.toString().trim();
+    } catch (e) {
+      // Fallback: intentar solo tecnologia
+      try {
+        final now = DateTime.now();
+        final mesConsulta = mes ?? now.month;
+        final annoConsulta = anno ?? now.year;
+        final yy = annoConsulta.toString().substring(2);
+        final yy4 = annoConsulta.toString();
+        final mm = mesConsulta.toString().padLeft(2, '0');
+        final sufPunto = '.$mm.$yy';
+        final sufBarra = '/$mm/$yy';
+        final sufPunto4 = '.$mm.$yy4';
+        final sufBarra4 = '/$mm/$yy4';
+        final sufIso = '$yy4-$mm-%';
+
+        final response = await _supabase
+            .from('produccion')
+            .select('tecnologia')
+            .eq('rut_tecnico', rutTecnico)
+            .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4,fecha_trabajo.like.%$sufIso')
+            .order('fecha_trabajo', ascending: false)
+            .limit(1)
+            .maybeSingle();
+
+        return response?['tecnologia']?.toString().trim();
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
   /// Obtener período CERRADO de Calidad (garantía ya venció)
   /// Ejemplo: Hoy 3 ENE → CERRADO = DIC (garantía terminó el 20 dic)
   /// Ejemplo: Hoy 25 ENE → CERRADO = ENE (garantía terminó el 20 ene)
@@ -2182,32 +2497,39 @@ class ProduccionService {
       final lista = List<Map<String, dynamic>>.from(response as List);
       print('📊 [Calidad] Registros encontrados en calidad_api_script: ${lista.length}');
 
-      // Acumular por período
+      // Acumular por período (reiterados y completadas desde calidad_api_script)
       Map<String, Map<String, int>> acum = {};
       for (var item in lista) {
         final p = item['periodo']?.toString() ?? '';
         acum.putIfAbsent(p, () => {'total': 0, 'reit': 0});
         if (item['estado']?.toString() == 'Completado') acum[p]!['total'] = acum[p]!['total']! + 1;
-        if (item['es_reiterado'] == true) acum[p]!['reit'] = acum[p]!['reit']! + 1;
+        if (_esReiterado(item['es_reiterado'])) acum[p]!['reit'] = acum[p]!['reit']! + 1;
       }
 
-      Map<String, dynamic>? _buildMap(String periodoInterno, String apiPeriodo) {
+      // Total de produccion por período (mismo que Producción)
+      final prodCerrado = await _obtenerTotalProduccionMes(rutTecnico, periodoCerrado);
+      final prodActual = await _obtenerTotalProduccionMes(rutTecnico, periodoActual);
+      final prodSiguiente = await _obtenerTotalProduccionMes(rutTecnico, periodoSiguiente);
+
+      Map<String, dynamic>? _buildMap(String periodoInterno, String apiPeriodo, int totalProd) {
         final d = acum[apiPeriodo];
         if (d == null) return null;
-        final total = d['total']!;
-        final reit  = d['reit']!;
+        final reit = d['reit']!;
+        final totalCalidad = d['total']!;
+        final totalCompletadas = totalProd > 0 ? totalProd : totalCalidad;
+        if (totalCompletadas == 0 && reit == 0) return null;
         return {
           'periodo': periodoInterno,
-          'total_completadas': total,
+          'total_completadas': totalCompletadas,
           'total_reiterados': reit,
-          'porcentaje_reiteracion': total > 0 ? (reit / total) * 100.0 : 0.0,
+          'porcentaje_reiteracion': totalCompletadas > 0 ? (reit / totalCompletadas) * 100.0 : 0.0,
           'promedio_dias': 0.0,
         };
       }
 
-      final cerrado  = _buildMap(periodoCerrado, apiCerrado);
-      final actual   = _buildMap(periodoActual, apiActual);
-      final siguiente = _buildMap(periodoSiguiente, apiSiguiente);
+      final cerrado  = _buildMap(periodoCerrado, apiCerrado, prodCerrado);
+      final actual   = _buildMap(periodoActual, apiActual, prodActual);
+      final siguiente = _buildMap(periodoSiguiente, apiSiguiente, prodSiguiente);
 
       print('📊 [Calidad] cerrado=${cerrado != null ? "✅ ${cerrado['total_reiterados']} reit / ${cerrado['total_completadas']}" : "❌"}');
       print('📊 [Calidad] actual=${actual != null ? "✅ ${actual['total_reiterados']} reit / ${actual['total_completadas']}" : "❌"}');
@@ -2240,7 +2562,10 @@ class ProduccionService {
     return Colors.red;                                 // Necesita mejorar (> 5.8%)
   }
 
-  /// Obtener calidad del técnico para un período específico desde calidad_api_script
+  /// Obtener calidad del técnico para un período específico.
+  /// total_completadas = produccion (si > 0); si no, calidad_api_script.
+  /// total_reiterados = desde calidad_api_script.
+  /// Así Producción y Calidad usan el mismo total para el período.
   Future<Map<String, dynamic>?> obtenerCalidadPorPeriodo(String rutTecnico, String periodo) async {
     try {
       // periodo puede venir como "YYYY-MM" o "MM-YYYY"; normalizar a "MM-YYYY"
@@ -2255,16 +2580,19 @@ class ProduccionService {
           .eq('periodo', periodoApi);
 
       final lista = List<Map<String, dynamic>>.from(response as List);
-      if (lista.isEmpty) return null;
+      final completadasCalidad = lista.where((o) => o['estado']?.toString() == 'Completado').length;
+      final reiterados = lista.where((o) => _esReiterado(o['es_reiterado'])).length;
 
-      final completadas = lista.where((o) => o['estado']?.toString() == 'Completado').length;
-      final reiterados  = lista.where((o) => o['es_reiterado'] == true).length;
+      // Total: preferir produccion (mismo que Producción); si 0, usar calidad_api_script
+      final totalProduccion = await _obtenerTotalProduccionMes(rutTecnico, periodo);
+      final totalCompletadas = totalProduccion > 0 ? totalProduccion : completadasCalidad;
+      if (totalCompletadas == 0 && reiterados == 0) return null;
 
       return {
         'periodo': periodo,
-        'total_completadas': completadas,
+        'total_completadas': totalCompletadas,
         'total_reiterados': reiterados,
-        'porcentaje_reiteracion': completadas > 0 ? (reiterados / completadas) * 100.0 : 0.0,
+        'porcentaje_reiteracion': totalCompletadas > 0 ? (reiterados / totalCompletadas) * 100.0 : 0.0,
         'promedio_dias': 0.0,
       };
     } catch (e) {
@@ -2308,15 +2636,18 @@ class ProduccionService {
 
       print('📋 [Detalle] calidad_api_script RUT=$rutTecnico periodo=$periodoApi');
 
+      // Traer todas las órdenes del periodo; filtrar reiterados en cliente
+      // (es_reiterado puede ser boolean true o string "SI" según fuente de datos)
       final response = await _supabase
           .from('calidad_api_script')
           .select()
           .eq('rut_o_bucket', rutTecnico)
           .eq('periodo', periodoApi)
-          .eq('es_reiterado', true)
           .order('fecha', ascending: false);
 
-      final lista = List<Map<String, dynamic>>.from(response as List);
+      final lista = (List<Map<String, dynamic>>.from(response as List))
+          .where((o) => _esReiterado(o['es_reiterado']))
+          .toList();
       print('📋 [Detalle] ✅ ${lista.length} reiterados encontrados');
       return lista;
     } catch (e) {
@@ -2440,9 +2771,7 @@ class ProduccionService {
         porTecnico[rut]!['total_completadas'] =
             (porTecnico[rut]!['total_completadas'] as int) + 1;
 
-        // Aceptar es_reiterado como bool true, int 1, o string 'true'
-        final esReit = item['es_reiterado'];
-        if (esReit == true || esReit == 1 || esReit.toString() == 'true') {
+        if (_esReiterado(item['es_reiterado'])) {
           porTecnico[rut]!['total_reiterados'] =
               (porTecnico[rut]!['total_reiterados'] as int) + 1;
         }
