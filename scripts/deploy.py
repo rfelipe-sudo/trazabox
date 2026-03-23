@@ -61,8 +61,8 @@ def get_supabase_config():
                 supabase_key = key_match.group(1)
 
     if not supabase_url or not supabase_key:
-        print("Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
-        print("Create a .env file or set environment variables")
+        print("Error: Supabase credentials not found. Set SUPABASE_URL and either SUPABASE_SERVICE_KEY (recommended for uploads) or SUPABASE_ANON_KEY, or configure them in lib/config/supabase_config.dart.")
+        print("Create a .env file or set the environment variables above.")
         sys.exit(1)
 
     return supabase_url, supabase_key
