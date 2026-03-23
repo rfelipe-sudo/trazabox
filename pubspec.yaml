@@ -1,7 +1,7 @@
 name: trazabox
 description: "TrazaBox - Gestión de alertas de fibra óptica para TRAZA"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.2.1+4
 
 environment:
   sdk: ^3.9.2
@@ -93,8 +93,9 @@ dependencies:
   flutter_background_service_android: ^6.2.2
   
   # Paquete compartido para Tester de Red v2 (Mapa de Calor)
-  tester_red_shared:
-    path: ../tester_red_shared
+  # COMENTADO: paquete no disponible
+  # tester_red_shared:
+  #   path: ../tester_red_shared
   
   # Supabase
   supabase_flutter: ^2.3.0
