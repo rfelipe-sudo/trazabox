@@ -279,11 +279,11 @@ def main():
 
     elif args.command == "deploy":
         # Full deploy: bump, build, upload
-        new_version, new_code = bump_version(args.part)
         if args.dry_run:
-            print(f"Would deploy version: {new_version}+{new_code}")
+            print("Dry run: would bump version, build APK, and upload to Supabase (no changes made).")
             return
 
+        new_version, new_code = bump_version(args.part)
         file_size = build_apk()
         version_data = create_version_json(new_version, new_code, file_size, args.notes)
         upload_to_supabase(version_data, APK_OUTPUT)
