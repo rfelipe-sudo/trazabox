@@ -95,6 +95,47 @@ flutter build apk --release
 
 ---
 
+## 📦 Build & Deploy
+
+### Comandos Rápidos (Makefile)
+
+```bash
+# Ver todos los comandos disponibles
+make help
+
+# Build
+make build          # Compilar APK release
+make clean          # Limpiar artefactos de build
+
+# Versionado
+make version        # Ver versión actual
+make bump           # Incrementar número de build
+make bump-patch     # Incrementar patch (1.0.0 -> 1.0.1)
+make bump-minor     # Incrementar minor (1.0.0 -> 1.1.0)
+
+# Deploy a Supabase
+make upload         # Subir APK existente
+make deploy         # Bump + build + upload
+make deploy-patch   # Deploy con patch bump
+NOTES="Bug fixes" make deploy  # Con notas de release
+```
+
+### Configuración de Deploy
+
+1. Crear archivo `.env` con credenciales de Supabase:
+```bash
+cp .env.example .env
+# Editar .env con tu SUPABASE_SERVICE_KEY
+```
+
+2. El bucket `app-updates` debe ser público en Supabase Storage
+
+3. Archivos en Supabase:
+   - `version.json` - Metadata de versión
+   - `trazabox.apk` - APK compilado
+
+---
+
 ## 📡 Webhook desde Kepler
 
 El panel Kepler debe enviar alertas con la siguiente estructura:

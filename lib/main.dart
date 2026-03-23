@@ -20,7 +20,7 @@ import 'package:trazabox/screens/registro_screen.dart';
 import 'package:trazabox/screens/home_screen.dart';
 import 'package:trazabox/screens/asistente_cto_screen.dart';
 import 'package:trazabox/screens/asistente_crea_terreno_screen.dart';
-import 'package:trazabox/screens/mapa_calor_screen.dart';
+// import 'package:trazabox/screens/mapa_calor_screen.dart'; // COMENTADO: tester_red_shared no disponible
 import 'package:trazabox/screens/ayuda_terreno_screen.dart';
 import 'package:trazabox/screens/speed_meter_screen.dart';
 import 'package:trazabox/screens/fiber_microscope_screen.dart';
@@ -302,7 +302,7 @@ class AgenteDesconexionesApp extends StatelessWidget {
           '/home': (context) => const AppWrapper(),
           '/asistente-cto': (context) => const AsistenteCtoScreen(),
           '/asistente-crea-terreno': (context) => const AsistenteCreaTerrenoScreen(),
-          '/mapa-calor': (context) => const MapaCalorScreen(),
+          // '/mapa-calor': (context) => const MapaCalorScreen(), // COMENTADO: tester_red_shared no disponible
           '/ayuda-terreno': (context) => const AyudaTerrenoScreen(),
           '/speed-meter': (context) => const SpeedMeterScreen(),
           '/microscope': (context) => const FiberMicroscopeScreen(),
