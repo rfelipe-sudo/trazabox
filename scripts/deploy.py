@@ -15,9 +15,9 @@ from pathlib import Path
 try:
     import requests
 except ImportError:
-    print("Installing requests...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "requests"], check=True)
-    import requests
+    print("Error: The 'requests' package is required but not installed.")
+    print("Please install it by running: pip install requests")
+    sys.exit(1)
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
