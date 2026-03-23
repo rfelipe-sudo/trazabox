@@ -1,7 +1,7 @@
 # TrazaBox Makefile
 # Automate build and deployment tasks
 
-.PHONY: help build clean deploy upload version bump-patch bump-minor bump-major run-dev
+.PHONY: help build build-split clean deploy deploy-patch deploy-minor deploy-major upload version bump bump-patch bump-minor bump-major run-dev deps doctor
 
 # Flutter command (handles snap installation)
 FLUTTER := $(shell which flutter 2>/dev/null || echo "snap run flutter")
