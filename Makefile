@@ -6,15 +6,18 @@
 # Flutter command (handles snap installation)
 FLUTTER := $(shell which flutter 2>/dev/null || echo "snap run flutter")
 
+# Obfuscation settings (makes reverse engineering harder)
+OBFUSCATE_FLAGS := --obfuscate --split-debug-info=./build/debug-info
+
 # Default target
 help:
 	@echo "TrazaBox Build & Deploy Commands"
 	@echo "================================"
 	@echo ""
-	@echo "Building:"
-	@echo "  make build          - Build release APK"
-	@echo "  make build-split    - Build split APKs per ABI (smaller)"
-	@echo "  make clean          - Clean build artifacts"
+	@echo "Building (obfuscated):"
+	@echo "  make build          - Build release APK (obfuscated)"
+	@echo "  make build-split    - Build split APKs per ABI (obfuscated, smaller)"
+	@echo "  make clean          - Clean build artifacts + debug symbols"
 	@echo ""
 	@echo "Versioning:"
 	@echo "  make version        - Show current version"
@@ -39,17 +42,21 @@ help:
 	@echo "  NOTES=\"message\"     - Add release notes to deploy/upload"
 	@echo "  make deploy NOTES=\"Bug fixes\""
 	@echo ""
+	@echo "Note: Debug symbols saved to build/debug-info/ for deobfuscating stack traces."
+	@echo "      Keep these files if you need to debug crashes from release builds!"
+	@echo ""
 
-# Build commands
+# Build commands (with obfuscation enabled)
 build:
-	$(FLUTTER) build apk --release
+	$(FLUTTER) build apk --release $(OBFUSCATE_FLAGS)
 
 build-split:
-	$(FLUTTER) build apk --split-per-abi --release
+	$(FLUTTER) build apk --split-per-abi --release $(OBFUSCATE_FLAGS)
 
 clean:
 	$(FLUTTER) clean
 	rm -rf build/
+	rm -rf ./build/debug-info/
 
 # Version commands
 version:
