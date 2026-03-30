@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../services/tag_service.dart';
-import '../services/portico_detector_service.dart';
 import '../models/paso_tag.dart';
 
 class DetalleTagScreen extends StatefulWidget {
@@ -141,52 +140,6 @@ class _DetalleTagScreenState extends State<DetalleTagScreen> {
                 ],
               ),
             ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          final detector = PorticoDetectorService();
-          final info = await detector.diagnostico();
-          if (!mounted) return;
-          showDialog(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: const Text('Diagnóstico TAG'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: info.entries.map((e) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${e.key}: ',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        Expanded(
-                          child: Text(
-                            e.value.toString(),
-                            style: const TextStyle(color: Colors.black87),
-                          ),
-                        ),
-                      ],
-                    ),
-                  )).toList(),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Cerrar'),
-                ),
-              ],
-            ),
-          );
-        },
-        child: const Icon(Icons.bug_report),
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
-      ),
     );
   }
 

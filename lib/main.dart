@@ -28,7 +28,6 @@ import 'package:trazabox/screens/fiber_microscope_screen.dart';
 import 'package:trazabox/screens/supervisor/mi_equipo_screen.dart';
 import 'package:trazabox/screens/bodeguero_menu_screen.dart';
 import 'package:trazabox/services/deteccion_caminata_service.dart';
-import 'package:trazabox/services/portico_detector_service.dart';
 import 'package:trazabox/services/kepler_polling_service.dart';
 import 'package:trazabox/services/notificacion_service.dart';
 import 'package:trazabox/services/alarm_audio_service.dart';
@@ -130,16 +129,6 @@ Future<void> _inicializarServiciosEnBackground() async {
     final ayudaService = AyudaService();
     // cargarHistorial migrado a Supabase Realtime — se carga al abrir pantalla
   } catch (_) {}
-
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final rol = prefs.getString('rol_usuario') ?? 'tecnico';
-    if (rol == 'tecnico') {
-      final porticoDetector = PorticoDetectorService();
-      await porticoDetector.iniciar();
-      print('✅ [Main] PorticoDetectorService iniciado');
-    }
-  } catch (e) { print('⚠️ [Main] PorticoDetector: $e'); }
 
   print('✅ [Main] Servicios en background inicializados');
 }
