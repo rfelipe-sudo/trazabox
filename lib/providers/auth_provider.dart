@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:trazabox/models/usuario.dart';
 import 'package:trazabox/constants/app_constants.dart';
 import 'package:trazabox/services/tecnico_service.dart';
+import 'package:trazabox/services/auth_service.dart';
 
 /// Estado del registro del dispositivo
 enum RegistroEstado {
@@ -36,6 +37,17 @@ class AuthProvider extends ChangeNotifier {
   String? _deviceId;
   String? get deviceId => _deviceId;
 
+  /// Tras abrir la app, exige contraseña una vez antes de entrar al home.
+  bool _sesionDesbloqueada = false;
+
+  bool get requiereDesbloqueoSesion =>
+      isAuthenticated && !_sesionDesbloqueada;
+
+  void marcarSesionDesbloqueada() {
+    _sesionDesbloqueada = true;
+    notifyListeners();
+  }
+
   /// Inicializa el provider verificando el registro del dispositivo
   Future<void> initialize() async {
     _isLoading = true;
@@ -51,6 +63,7 @@ class AuthProvider extends ChangeNotifier {
       _tecnico = await TecnicoService.verificarRegistro();
       
       if (_tecnico != null) {
+        _sesionDesbloqueada = false;
         // Dispositivo registrado - crear usuario desde datos del técnico
         _usuario = Usuario(
           id: _tecnico!.deviceId,
@@ -79,8 +92,9 @@ class AuthProvider extends ChangeNotifier {
 
   /// Registra el dispositivo con los datos del técnico
   Future<bool> registrarDispositivo({
-    required String telefono,
+    String telefono = '',
     required String nombre,
+    String? rutCuerpo,
     String rol = 'tecnico',
   }) async {
     _isLoading = true;
@@ -88,16 +102,18 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
     
     try {
-      // Validaciones
-      if (telefono.trim().isEmpty) {
-        _error = 'El teléfono es obligatorio';
+      final tel = telefono.trim();
+      final rut = rutCuerpo?.trim() ?? '';
+
+      if (nombre.trim().isEmpty) {
+        _error = 'El nombre es obligatorio';
         _isLoading = false;
         notifyListeners();
         return false;
       }
-      
-      if (nombre.trim().isEmpty) {
-        _error = 'El nombre es obligatorio';
+
+      if (tel.isEmpty && rut.isEmpty) {
+        _error = 'Falta teléfono o RUT para identificar el dispositivo';
         _isLoading = false;
         notifyListeners();
         return false;
@@ -105,9 +121,10 @@ class AuthProvider extends ChangeNotifier {
       
       // Registrar el técnico
       _tecnico = await TecnicoService.registrarTecnico(
-        telefono: telefono.trim(),
+        telefono: tel.isNotEmpty ? tel : rut,
         nombre: nombre.trim(),
         rol: rol,
+        rutCuerpo: rut.isNotEmpty ? rut : null,
       );
       
       if (_tecnico == null) {
@@ -135,6 +152,7 @@ class AuthProvider extends ChangeNotifier {
       );
       
       _registroEstado = RegistroEstado.registrado;
+      _sesionDesbloqueada = true;
       _isLoading = false;
       notifyListeners();
       
@@ -154,14 +172,18 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
     
     try {
-      // Limpiar registro local
       await TecnicoService.limpiarRegistro();
-      
+      await AuthService().logout();
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(AppConstants.storageKeyUsuario);
-      
+      await prefs.remove('rut_tecnico');
+      await prefs.remove('tipo_contrato');
+      await prefs.remove('rol_usuario');
+
       _usuario = null;
       _tecnico = null;
+      _sesionDesbloqueada = false;
       _registroEstado = RegistroEstado.noRegistrado;
     } catch (e) {
       print('Error en logout: $e');

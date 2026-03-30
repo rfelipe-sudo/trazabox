@@ -7,6 +7,28 @@ import 'package:trazabox/constants/app_colors.dart';
 import 'package:trazabox/providers/auth_provider.dart';
 import 'package:trazabox/services/auth_service.dart';
 import 'package:trazabox/services/tecnico_service.dart';
+import 'package:trazabox/services/trazabox_password_service.dart';
+import 'package:trazabox/screens/establecer_nueva_password_screen.dart';
+
+/// Contraseña inicial: últimos 4 dígitos del cuerpo del RUT (antes del guión).
+String? passwordInicialDesdeRut(String rut) {
+  final s = rut.trim().replaceAll('.', '');
+  final i = s.indexOf('-');
+  if (i <= 0) return null;
+  final cuerpo = s.substring(0, i).replaceAll(RegExp(r'[^0-9]'), '');
+  if (cuerpo.isEmpty) return null;
+  if (cuerpo.length <= 4) return cuerpo;
+  return cuerpo.substring(cuerpo.length - 4);
+}
+
+/// Cuerpo numérico del RUT sin puntos ni guión (solo dígitos antes del DV).
+String? cuerpoNumericoRut(String rut) {
+  final s = rut.trim().replaceAll('.', '');
+  final i = s.indexOf('-');
+  final head = i > 0 ? s.substring(0, i) : s.replaceAll(RegExp(r'[\-kK]'), '');
+  final digits = head.replaceAll(RegExp(r'[^0-9]'), '');
+  return digits.isEmpty ? null : digits;
+}
 
 class RegistroScreen extends StatefulWidget {
   const RegistroScreen({super.key});
@@ -17,7 +39,7 @@ class RegistroScreen extends StatefulWidget {
 
 class _RegistroScreenState extends State<RegistroScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _telefonoController = TextEditingController();
+  final _passwordController = TextEditingController();
   final _rutController = TextEditingController();
   bool _isLoading = false;
   bool _validandoRut = false;
@@ -25,10 +47,11 @@ class _RegistroScreenState extends State<RegistroScreen> {
   bool _rutValido = false;
   String _tipoContrato = 'nuevo';
   String _rolEncontrado = 'tecnico';
+  bool _obscurePassword = true;
 
   @override
   void dispose() {
-    _telefonoController.dispose();
+    _passwordController.dispose();
     _rutController.dispose();
     super.dispose();
   }
@@ -41,8 +64,10 @@ class _RegistroScreenState extends State<RegistroScreen> {
 
   Future<void> _cargarDatosGuardados() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
     final rutGuardado = prefs.getString('rut_tecnico');
-    
+
     if (rutGuardado != null) {
       _rutController.text = rutGuardado;
       await _validarRut(rutGuardado); // Auto-validar RUT guardado
@@ -52,7 +77,8 @@ class _RegistroScreenState extends State<RegistroScreen> {
   /// Valida el RUT contra la base de datos de producción
   Future<void> _validarRut(String rut) async {
     if (rut.trim().isEmpty) return;
-    
+
+    if (!mounted) return;
     setState(() {
       _validandoRut = true;
       _nombreEncontrado = null;
@@ -61,6 +87,7 @@ class _RegistroScreenState extends State<RegistroScreen> {
 
     final resultado = await TecnicoService.validarRutEnProduccion(rut.trim());
 
+    if (!mounted) return;
     setState(() {
       _validandoRut = false;
       if (resultado != null) {
@@ -89,26 +116,62 @@ class _RegistroScreenState extends State<RegistroScreen> {
       );
       return;
     }
-    
+
+    final rut = _rutController.text.trim();
+
     setState(() => _isLoading = true);
-    
+
+    try {
+      final pwdSvc = TrazaboxPasswordService();
+      final loginRes = await pwdSvc.login(rut, _passwordController.text.trim());
+
+      if (!loginRes.success) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(loginRes.mensajeUsuario),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (loginRes.mustChangePassword) {
+        final initialPwd = _passwordController.text.trim();
+        if (!mounted) return;
+        await Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (ctx) => EstablecerNuevaPasswordScreen(
+              rut: rut,
+              initialPassword: initialPwd,
+              onSuccess: () => _completarRegistroTrasPassword(rut),
+            ),
+          ),
+        );
+        return;
+      }
+
+      await _completarRegistroTrasPassword(rut);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// Registro local del dispositivo + preferencias + navegación (contraseña ya validada en Supabase).
+  Future<void> _completarRegistroTrasPassword(String rut) async {
     final auth = context.read<AuthProvider>();
     final authService = AuthService();
-    
-    // Hacer login por RUT para detectar rol
-    String? rol;
-    final rut = _rutController.text.trim();
-    final usuario = await authService.loginPorRut(rut);
-    if (usuario != null) {
-      rol = usuario['rol_nombre']?.toString() ?? 'tecnico';
-    }
-    
+
+    await authService.loginPorRut(rut);
+
+    final rutCuerpo = cuerpoNumericoRut(rut);
     final success = await auth.registrarDispositivo(
-      telefono: _telefonoController.text.trim(),
-      nombre: _nombreEncontrado!, // Usar el nombre de Supabase
+      nombre: _nombreEncontrado!,
+      rutCuerpo: rutCuerpo,
+      rol: _rolEncontrado,
     );
-    
-    // Guardar RUT y tipo_contrato en SharedPreferences
+
     if (success) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('rut_tecnico', rut);
@@ -119,33 +182,22 @@ class _RegistroScreenState extends State<RegistroScreen> {
         await prefs.setString('nombre_supervisor', _nombreEncontrado ?? '');
       }
     }
-    
-    setState(() => _isLoading = false);
-    
-    if (!success && mounted) {
+
+    if (!mounted) return;
+
+    if (!success) {
+      final msg = auth.error ?? 'Error al registrar';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(auth.error ?? 'Error al registrar'),
+          content: Text(msg),
           backgroundColor: AppColors.alertUrgent,
         ),
       );
-    } else if (success && mounted) {
-      // Navegar según rol
-      final rolFinal = rol ?? await authService.getRol();
-      _navegarSegunRol(rolFinal);
+      throw Exception(msg);
     }
-  }
 
-  void _navegarSegunRol(String rol) {
-    if (rol == 'supervisor') {
-      Navigator.of(context).pushReplacementNamed('/supervisor-equipo');
-    } else if (rol == 'ito') {
-      // ITOs ven panel técnico pero con acceso a Mi Equipo
-      Navigator.of(context).pushReplacementNamed('/home');
-    } else {
-      // Técnicos ven panel normal
-      Navigator.of(context).pushReplacementNamed('/home');
-    }
+    // Siempre AppWrapper: desbloqueo por contraseña y ruteo por rol (supervisor → Mi Equipo).
+    Navigator.of(context).pushNamedAndRemoveUntil('/home', (r) => false);
   }
 
   @override
@@ -302,22 +354,27 @@ class _RegistroScreenState extends State<RegistroScreen> {
                 
                 if (_nombreEncontrado != null) const SizedBox(height: 20),
                 
-                // Campo Teléfono
+                // Contraseña: primera vez = 4 últimos del RUT; si ya la cambiaste en Supabase, la nueva.
                 _buildTextField(
-                  controller: _telefonoController,
-                  label: 'Teléfono para notificaciones',
-                  hint: '+56 9 1234 5678',
-                  icon: Icons.phone,
-                  keyboardType: TextInputType.phone,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[\d\s\+\-]')),
-                  ],
+                  controller: _passwordController,
+                  label: 'Contraseña',
+                  hint: 'Primer acceso: 4 últimos dígitos del RUT antes del guión',
+                  icon: Icons.lock_outline,
+                  keyboardType: TextInputType.visiblePassword,
+                  obscureText: _obscurePassword,
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                      color: const Color(0xFF00D9FF),
+                    ),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) {
-                      return 'El teléfono es obligatorio';
+                      return 'Ingresa la contraseña';
                     }
-                    if (value.replaceAll(RegExp(r'[\s\+\-]'), '').length < 8) {
-                      return 'Teléfono inválido';
+                    if (value.trim().length < 4) {
+                      return 'Mínimo 4 caracteres';
                     }
                     return null;
                   },
@@ -360,7 +417,7 @@ class _RegistroScreenState extends State<RegistroScreen> {
                 
                 const SizedBox(height: 24),
                 
-                // Nota sobre el teléfono
+                // Nota sobre la contraseña inicial
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -378,7 +435,7 @@ class _RegistroScreenState extends State<RegistroScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'Tu teléfono será usado para recibir las alertas del panel Kepler.',
+                          'La primera vez que entras, Supabase valida los 4 últimos números del RUT antes del guión; luego debes crear una contraseña nueva (mín. 8 caracteres). Si ya la creaste, ingresa esa contraseña.',
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.7),
                             fontSize: 13,
@@ -420,6 +477,7 @@ class _RegistroScreenState extends State<RegistroScreen> {
     String? Function(String?)? validator,
     void Function(String)? onChanged,
     Widget? suffixIcon,
+    bool obscureText = false,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -437,6 +495,7 @@ class _RegistroScreenState extends State<RegistroScreen> {
           controller: controller,
           keyboardType: keyboardType,
           textCapitalization: textCapitalization,
+          obscureText: obscureText,
           inputFormatters: inputFormatters,
           validator: validator,
           onChanged: onChanged,

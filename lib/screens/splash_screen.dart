@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:trazabox/services/update_service.dart';
-import 'home_screen.dart';
 
 // ─── Paleta ──────────────────────────────────────────────────────────────────
 const _bg     = Color(0xFF050810);
@@ -135,14 +134,7 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const HomeScreen(),
-        transitionDuration: const Duration(milliseconds: 800),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-      ),
-    );
+    Navigator.of(context).pushReplacementNamed('/home');
   }
 
   @override

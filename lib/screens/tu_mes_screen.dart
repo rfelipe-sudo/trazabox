@@ -41,6 +41,7 @@ class _TuMesScreenState extends State<TuMesScreen> {
   String _periodoCerrado = '';
   String _periodoActual = '';
   String _periodoAnterior = '';
+  String _tipoContratoCalidad = 'nuevo'; // 'nuevo' o 'antiguo' - para desglose por tecnología
   
   // Producción - períodos
   Map<String, dynamic>? _produccionCerrado;   // Mes - 1 (cerrado) = febrero
@@ -59,6 +60,8 @@ class _TuMesScreenState extends State<TuMesScreen> {
   @override
   void initState() {
     super.initState();
+    _periodoCerrado = _calidadService.getPeriodoMidiendo();
+    _periodoActual = _calidadService.getPeriodoProximo();
     _cargarDatos();
   }
 
@@ -213,45 +216,64 @@ class _TuMesScreenState extends State<TuMesScreen> {
   }
 
   Future<void> _cargarReiteracionCalidad() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final rutTecnico = prefs.getString('rut_tecnico');
+    final prefs = await SharedPreferences.getInstance();
+    final rutTecnico = prefs.getString('rut_tecnico');
+    final periodoBonoMarzo = _calidadService.getPeriodoMidiendo();
+    final periodoBonoAbril = _calidadService.getPeriodoProximo();
 
-      if (rutTecnico != null) {
-        final periodoCerrado = _calidadService.getPeriodoCerrado();
-        final periodoMidiendo = _calidadService.getPeriodoMidiendo();
-
-        final resultados = await Future.wait([
-          _calidadService.obtenerCalidadPorPeriodo(rutTecnico, periodoCerrado),
-          _calidadService.obtenerCalidadPorPeriodo(rutTecnico, periodoMidiendo),
-        ]);
-
-        setState(() {
-          _calidadCerrado = resultados[0];
-          _calidadActual = resultados[1];
-          _calidadAnterior = null;
-          _periodoCerrado = periodoCerrado;
-          _periodoActual = periodoMidiendo;
-          _periodoAnterior = '';
-        });
-      } else {
-        setState(() {
-          _calidadCerrado = null;
-          _calidadActual = null;
-          _calidadAnterior = null;
-          _periodoCerrado = '';
-          _periodoActual = '';
-          _periodoAnterior = '';
-        });
-      }
-    } catch (e) {
-      print('⚠️ [TuMes] Error cargando calidad: $e');
+    if (rutTecnico == null) {
       setState(() {
         _calidadCerrado = null;
         _calidadActual = null;
         _calidadAnterior = null;
         _periodoCerrado = '';
         _periodoActual = '';
+        _periodoAnterior = '';
+      });
+      return;
+    }
+
+    try {
+      final tipoContrato =
+          await _calidadService.obtenerTipoContrato(rutTecnico, prefs: prefs);
+      print(
+          '📋 [TuMes] Calidad tipo=$tipoContrato períodos $periodoBonoMarzo | $periodoBonoAbril');
+
+      List<Map<String, dynamic>?> resultados;
+      if (tipoContrato == 'antiguo') {
+        resultados = await Future.wait([
+          _calidadService.obtenerCalidadPorPeriodoPorTecnologia(
+              rutTecnico, periodoBonoMarzo),
+          _calidadService.obtenerCalidadPorPeriodoPorTecnologia(
+              rutTecnico, periodoBonoAbril),
+        ]);
+      } else {
+        resultados = await Future.wait([
+          _calidadService.obtenerCalidadPorPeriodo(rutTecnico, periodoBonoMarzo),
+          _calidadService.obtenerCalidadPorPeriodo(rutTecnico, periodoBonoAbril),
+        ]);
+      }
+
+      setState(() {
+        _tipoContratoCalidad = tipoContrato;
+        _calidadCerrado = resultados[0];
+        _calidadActual = resultados[1];
+        _calidadAnterior = null;
+        _periodoCerrado = periodoBonoMarzo;
+        _periodoActual = periodoBonoAbril;
+        _periodoAnterior = '';
+      });
+    } catch (e) {
+      print('⚠️ [TuMes] Error cargando calidad: $e');
+      final tipoFallback =
+          await _calidadService.obtenerTipoContrato(rutTecnico, prefs: prefs);
+      setState(() {
+        _tipoContratoCalidad = tipoFallback;
+        _calidadCerrado = null;
+        _calidadActual = null;
+        _calidadAnterior = null;
+        _periodoCerrado = periodoBonoMarzo;
+        _periodoActual = periodoBonoAbril;
         _periodoAnterior = '';
       });
     }
@@ -343,13 +365,42 @@ class _TuMesScreenState extends State<TuMesScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Título del mes
-                    Text(
-                      '$nombreMes ${now.year}',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    // Título del mes + badge tipo contrato (CN/CA)
+                    Row(
+                      children: [
+                        Text(
+                          '$nombreMes ${now.year}',
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _tipoContratoCalidad == 'antiguo'
+                                ? Colors.amber.withOpacity(0.3)
+                                : Colors.blue.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: _tipoContratoCalidad == 'antiguo'
+                                  ? Colors.amber
+                                  : Colors.blue,
+                            ),
+                          ),
+                          child: Text(
+                            _tipoContratoCalidad == 'antiguo' ? 'CA' : 'CN',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: _tipoContratoCalidad == 'antiguo'
+                                  ? Colors.amber[700]
+                                  : Colors.blue[700],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
 
@@ -396,64 +447,42 @@ class _TuMesScreenState extends State<TuMesScreen> {
   Widget _buildCardCalidadCompleto() {
     final now = DateTime.now();
     
-    if (_calidadCerrado == null && _calidadActual == null) {
-      return Card(
-        elevation: 2,
-        child: InkWell(
-                      onTap: () => Navigator.push(
-                        context,
-            MaterialPageRoute(builder: (_) => const CalidadDetalleScreen()),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.star, color: Colors.amber),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Calidad - Sin datos',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-    
-    // Período cerrado
-    final porcentajeCerrado = (_calidadCerrado?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+    // Período cerrado — parear con Producción: usar ordenesCompletadas de produccion como denominador
     final reiteradosCerrado = (_calidadCerrado?['total_reiterados'] as num?)?.toInt() ?? 0;
-    final completadasCerrado = (_calidadCerrado?['total_completadas'] as num?)?.toInt() ?? 0;
-    final periodoCerrado = _calidadCerrado?['periodo']?.toString() ?? '';
+    final completadasCerrado = (_produccionCerrado?['ordenesCompletadas'] as num?)?.toInt() ??
+        (_calidadCerrado?['total_completadas'] as num?)?.toInt() ?? 0;
+    final porcentajeCerrado = completadasCerrado > 0
+        ? reiteradosCerrado / completadasCerrado * 100
+        : (_calidadCerrado?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+    final periodoCerrado =
+        _calidadCerrado?['periodo']?.toString() ?? _periodoCerrado;
     
     // Formato período: MM-YYYY (ej: "02-2026")
     String nombreMesCerrado = '';
     int mesGarantiaCerrado = now.month - 1;
     if (periodoCerrado.isNotEmpty) {
       nombreMesCerrado = _calidadService.getNombreBono(periodoCerrado);
-      mesGarantiaCerrado = int.tryParse(periodoCerrado.split('-')[0]) ?? mesGarantiaCerrado;
+      final m = _calidadService.getMesMedicion(periodoCerrado);
+      if (m >= 1 && m <= 12) mesGarantiaCerrado = m;
     }
 
     Color colorCerrado = _getColorCalidad(porcentajeCerrado);
 
-    // Período actual (midiendo)
-    final porcentajeActual = (_calidadActual?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+    // Período actual (midiendo) — parear con Producción: usar ordenesCompletadas de produccion como denominador
     final reiteradosActual = (_calidadActual?['total_reiterados'] as num?)?.toInt() ?? 0;
-    final completadasActual = (_calidadActual?['total_completadas'] as num?)?.toInt() ?? 0;
+    final completadasActual = (_produccionActual?['ordenesCompletadas'] as num?)?.toInt() ??
+        (_calidadActual?['total_completadas'] as num?)?.toInt() ?? 0;
+    final porcentajeActual = completadasActual > 0
+        ? reiteradosActual / completadasActual * 100
+        : (_calidadActual?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
     final periodoActual = _calidadActual?['periodo']?.toString() ?? _periodoActual;
 
     String nombreMesActual = '';
     int mesGarantiaActual = now.month;
     if (periodoActual.isNotEmpty) {
       nombreMesActual = _calidadService.getNombreBono(periodoActual);
-      mesGarantiaActual = int.tryParse(periodoActual.split('-')[0]) ?? mesGarantiaActual;
+      final m = _calidadService.getMesMedicion(periodoActual);
+      if (m >= 1 && m <= 12) mesGarantiaActual = m;
     }
 
     Color colorActual = _getColorCalidad(porcentajeActual);
@@ -462,10 +491,10 @@ class _TuMesScreenState extends State<TuMesScreen> {
     int mesCierre = now.month;
     int annoCierre = now.year;
     if (periodoActual.isNotEmpty) {
-      final partes = periodoActual.split('-');
-      if (partes.length == 2) {
-        mesCierre = int.tryParse(partes[0]) ?? now.month;
-        annoCierre = int.tryParse(partes[1]) ?? now.year;
+      final pa = _calidadService.parseMesAnnoMedicion(periodoActual);
+      if (pa.$1 >= 1 && pa.$1 <= 12 && pa.$2 > 2000) {
+        mesCierre = pa.$1;
+        annoCierre = pa.$2;
       }
     }
     // Último día del mes de cierre
@@ -496,6 +525,51 @@ class _TuMesScreenState extends State<TuMesScreen> {
                 ],
               ),
             ),
+            if (_periodoCerrado.isNotEmpty || _periodoActual.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  Chip(
+                    avatar: Icon(
+                      _tipoContratoCalidad == 'antiguo'
+                          ? Icons.hub_outlined
+                          : Icons.merge_type,
+                      size: 18,
+                      color: _tipoContratoCalidad == 'antiguo'
+                          ? Colors.orange[200]
+                          : Colors.lightBlue[200],
+                    ),
+                    label: Text(
+                      _tipoContratoCalidad == 'antiguo'
+                          ? 'Contrato antiguo · por tecnología'
+                          : 'Contrato nuevo · consolidado',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    backgroundColor: Colors.grey[800],
+                    side: BorderSide(
+                      color: _tipoContratoCalidad == 'antiguo'
+                          ? Colors.orange.withOpacity(0.5)
+                          : Colors.cyan.withOpacity(0.5),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                  ),
+                  Chip(
+                    label: Text(
+                      'Medición: $_periodoCerrado · $_periodoActual',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey[400],
+                      ),
+                    ),
+                    backgroundColor: Colors.grey[850],
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 16),
             
             // Dos columnas para los períodos
@@ -518,10 +592,10 @@ class _TuMesScreenState extends State<TuMesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Título
+                            // Título - Bono Marzo
                             Row(
                               children: [
-                                const Icon(Icons.lock, size: 14, color: Colors.white),
+                                const Icon(Icons.hourglass_empty, size: 14, color: Colors.white),
                                 const SizedBox(width: 4),
                                 Expanded(
                                   child: Text(
@@ -537,23 +611,26 @@ class _TuMesScreenState extends State<TuMesScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              '1/${_getMesAbrev(mesGarantiaCerrado - 1)} - fin/${_getMesAbrev(mesGarantiaCerrado - 1)}',
+                              '1/${_getMesAbrev(mesGarantiaCerrado)} - fin/${_getMesAbrev(mesGarantiaCerrado)}',
                               style: const TextStyle(fontSize: 9, color: Colors.white70),
                             ),
                             const SizedBox(height: 8),
-                            // Porcentaje
-                            Text(
-                              '${porcentajeCerrado.toStringAsFixed(1)}%',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: colorCerrado,
+                            // Contenido: total o desglose por tecnología (completadas pareadas con Producción)
+                            ..._buildContenidoCalidadPeriodo(
+                              _calidadCerrado,
+                              colorCerrado,
+                              esContratoAntiguo: _tipoContratoCalidad == 'antiguo',
+                              completadasOverride: completadasCerrado,
+                            ),
+                            if (_calidadCerrado == null)
+                              Text(
+                                'Sin datos de calidad',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[500],
+                                  fontStyle: FontStyle.italic,
+                                ),
                               ),
-                            ),
-                            Text(
-                              '$reiteradosCerrado / $completadasCerrado',
-                              style: const TextStyle(fontSize: 11, color: Colors.white70),
-                            ),
                             const SizedBox(height: 8),
                             // Estado
                             Container(
@@ -563,7 +640,7 @@ class _TuMesScreenState extends State<TuMesScreen> {
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: const Text(
-                                'Periodo cerrado',
+                                'Midiendo',
                                 style: TextStyle(fontSize: 9, color: Colors.white70),
                               ),
                             ),
@@ -573,7 +650,7 @@ class _TuMesScreenState extends State<TuMesScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // DERECHA: Período ACTUAL
+                  // DERECHA: Bono Abril
                   Expanded(
                     child: InkWell(
                       onTap: () => Navigator.push(
@@ -590,10 +667,10 @@ class _TuMesScreenState extends State<TuMesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Título
+                            // Título - Bono Abril
                             Row(
                               children: [
-                                const Icon(Icons.hourglass_empty, size: 14, color: Colors.white),
+                                const Icon(Icons.schedule, size: 14, color: Colors.white),
                                 const SizedBox(width: 4),
                                 Expanded(
                                   child: Text(
@@ -609,34 +686,37 @@ class _TuMesScreenState extends State<TuMesScreen> {
                 ),
                             const SizedBox(height: 4),
                             Text(
-                              '1/${_getMesAbrev(mesGarantiaActual - 1)} - fin/${_getMesAbrev(mesGarantiaActual - 1)}',
+                              '1/${_getMesAbrev(mesGarantiaActual)} - fin/${_getMesAbrev(mesGarantiaActual)}',
                               style: const TextStyle(fontSize: 9, color: Colors.white70),
                             ),
                             const SizedBox(height: 8),
-                            // Porcentaje
-                            Text(
-                              '${porcentajeActual.toStringAsFixed(1)}%',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: colorActual,
+                            // Contenido: total o desglose por tecnología (completadas pareadas con Producción)
+                            ..._buildContenidoCalidadPeriodo(
+                              _calidadActual,
+                              colorActual,
+                              esContratoAntiguo: _tipoContratoCalidad == 'antiguo',
+                              completadasOverride: completadasActual,
+                            ),
+                            if (_calidadActual == null)
+                              Text(
+                                'Sin datos de calidad',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[500],
+                                  fontStyle: FontStyle.italic,
+                                ),
                               ),
-                            ),
-                            Text(
-                              '$reiteradosActual / $completadasActual',
-                              style: const TextStyle(fontSize: 11, color: Colors.white70),
-                            ),
                             const SizedBox(height: 8),
-                            // Estado
+                            // Estado - Bono Abril (próximo)
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
                                 color: Colors.black45,
                                 borderRadius: BorderRadius.circular(4),
                               ),
-                              child: Text(
-                                'Cierra en $diasRestantes días',
-                                style: const TextStyle(fontSize: 9, color: Colors.white),
+                              child: const Text(
+                                'Próximo',
+                                style: TextStyle(fontSize: 9, color: Colors.white),
                               ),
                             ),
                           ],
@@ -663,6 +743,91 @@ class _TuMesScreenState extends State<TuMesScreen> {
     } else {
       return Colors.red;
     }
+  }
+
+  /// Contenido del período de calidad: total (contrato nuevo) o desglose por tecnología (contrato antiguo).
+  /// completadasOverride: ordenesCompletadas de Producción para parear denominador (ej: 2/89).
+  List<Widget> _buildContenidoCalidadPeriodo(
+    Map<String, dynamic>? calidad,
+    Color colorBase, {
+    required bool esContratoAntiguo,
+    int? completadasOverride,
+  }) {
+    if (calidad == null) return [];
+
+    if (!esContratoAntiguo) {
+      final reit = (calidad['total_reiterados'] as num?)?.toInt() ?? 0;
+      final comp = completadasOverride ?? (calidad['total_completadas'] as num?)?.toInt() ?? 0;
+      final pct = comp > 0 ? reit / comp * 100 : (calidad['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+      return [
+        Text(
+          '${pct.toStringAsFixed(1)}%',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: colorBase),
+        ),
+        Text(
+          '$reit / $comp',
+          style: const TextStyle(fontSize: 11, color: Colors.white70),
+        ),
+      ];
+    }
+
+    final porTec = (calidad['por_tecnologia'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    if (porTec.isEmpty) {
+      final reit = (calidad['total_reiterados'] as num?)?.toInt() ?? 0;
+      final comp = completadasOverride ?? (calidad['total_completadas'] as num?)?.toInt() ?? 0;
+      final pct = comp > 0 ? reit / comp * 100 : (calidad['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+      return [
+        Text(
+          '${pct.toStringAsFixed(1)}%',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: colorBase),
+        ),
+        Text('$reit / $comp', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+      ];
+    }
+
+    final coloresTec = {
+      'HFC': Colors.orange,
+      'FTTH': Colors.purple,
+      'RED_NEUTRA': Colors.cyan,
+    };
+
+    // Contrato antiguo con por_tecnologia: usar completadasOverride cuando hay una sola tech (solo HFC)
+    return [
+      ...porTec.map((t) {
+        final tec = t['tecnologia']?.toString() ?? '';
+        final reit = (t['reiterados'] as num?)?.toInt() ?? 0;
+        final compOrig = (t['completadas'] as num?)?.toInt() ?? 0;
+        final comp = (porTec.length == 1 && completadasOverride != null) ? completadasOverride : compOrig;
+        final pct = comp > 0 ? reit / comp * 100 : (t['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+        final color = coloresTec[tec] ?? colorBase;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(tec, style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: color)),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${pct.toStringAsFixed(1)}%',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color),
+                  ),
+                ],
+              ),
+              Text('$reit / $comp', style: const TextStyle(fontSize: 10, color: Colors.white70)),
+            ],
+          ),
+        );
+      }),
+    ];
   }
 
   Widget _buildMenuCard({
@@ -1160,6 +1325,11 @@ class _TuMesScreenState extends State<TuMesScreen> {
     final totalActual = (_produccionActual?['totalRGU'] as num?)?.toDouble() ?? 0.0;
     final ordActual   = (_produccionActual?['ordenesCompletadas'] as num?)?.toInt() ?? 0;
     final diasActual  = (_produccionActual?['diasConProduccion'] as num?)?.toInt() ?? 0;
+    final ptosActual  = (_produccionActual?['ptosHfc'] as num?)?.toDouble() ?? 0.0;
+    final rguFtthActual = (_produccionActual?['rguFtth'] as num?)?.toDouble() ?? 0.0;
+    final rguNeutraActual = (_produccionActual?['rguRedNeutra'] as num?)?.toDouble() ?? 0.0;
+    final tipoContratoActual = _produccionActual?['tipoContrato']?.toString() ?? 'nuevo';
+    final promedioPtsActual = (_produccionActual?['promedioPts'] as num?)?.toDouble() ?? 0.0;
     final mesBono     = mesActual == 12 ? 1 : mesActual + 1;
     final annoBono    = mesActual == 12 ? annoActual + 1 : annoActual;
     final diasRestantes = DateTime(annoActual, mesActual + 1, 0).day - now.day;
@@ -1169,6 +1339,11 @@ class _TuMesScreenState extends State<TuMesScreen> {
     final totalCerrado = (_produccionCerrado?['totalRGU'] as num?)?.toDouble() ?? 0.0;
     final ordCerrado   = (_produccionCerrado?['ordenesCompletadas'] as num?)?.toInt() ?? 0;
     final diasCerrado  = (_produccionCerrado?['diasConProduccion'] as num?)?.toInt() ?? 0;
+    final ptosCerrado  = (_produccionCerrado?['ptosHfc'] as num?)?.toDouble() ?? 0.0;
+    final rguFtthCerrado = (_produccionCerrado?['rguFtth'] as num?)?.toDouble() ?? 0.0;
+    final rguNeutraCerrado = (_produccionCerrado?['rguRedNeutra'] as num?)?.toDouble() ?? 0.0;
+    final tipoContratoCerrado = _produccionCerrado?['tipoContrato']?.toString() ?? 'nuevo';
+    final promedioPtsCerrado = (_produccionCerrado?['promedioPts'] as num?)?.toDouble() ?? 0.0;
     final mesBonoCerrado = mesCerrado == 12 ? 1 : mesCerrado + 1;
 
     Color _colorRGU(double rgu) {
@@ -1176,6 +1351,29 @@ class _TuMesScreenState extends State<TuMesScreen> {
       if (rgu < 3)  return Colors.red[700]!;
       if (rgu < 4.5) return Colors.orange[700]!;
       return Colors.green[700]!;
+    }
+
+    Color _colorPts(double pts) {
+      if (pts <= 0) return Colors.grey[700]!;
+      if (pts < 3)  return Colors.red[700]!;
+      if (pts < 4.5) return Colors.orange[700]!;
+      return Colors.green[700]!;
+    }
+
+    // Contrato antiguo: solo HFC = solo PTS; mixto = ambos totales
+    bool _esContratoAntiguo(String t) {
+      final u = t.toUpperCase();
+      return u == 'ANTIGUO' || u == 'CA';
+    }
+
+    bool _esSoloHfc(String tipoContrato, double ptos, double rguFtth, double rguNeutra) {
+      if (!_esContratoAntiguo(tipoContrato)) return false;
+      return ptos > 0 && rguFtth == 0 && rguNeutra == 0;
+    }
+
+    bool _esMixto(String tipoContrato, double ptos, double rguFtth, double rguNeutra) {
+      if (!_esContratoAntiguo(tipoContrato)) return false;
+      return ptos > 0 && (rguFtth > 0 || rguNeutra > 0);
     }
 
     return Card(
@@ -1225,7 +1423,9 @@ class _TuMesScreenState extends State<TuMesScreen> {
                       child: Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: _colorRGU(rguCerrado),
+                          color: _esSoloHfc(tipoContratoCerrado, ptosCerrado, rguFtthCerrado, rguNeutraCerrado)
+                              ? _colorPts(promedioPtsCerrado)
+                              : _colorRGU(rguCerrado),
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Column(
@@ -1251,17 +1451,27 @@ class _TuMesScreenState extends State<TuMesScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              rguCerrado.toStringAsFixed(1),
+                              _esSoloHfc(tipoContratoCerrado, ptosCerrado, rguFtthCerrado, rguNeutraCerrado)
+                                  ? promedioPtsCerrado.toStringAsFixed(1)
+                                  : rguCerrado.toStringAsFixed(1),
                               style: const TextStyle(
                                   fontSize: 28,
                                   fontWeight: FontWeight.bold,
                                   color: Colors.white),
                             ),
-                            const Text('RGU/día',
-                                style: TextStyle(fontSize: 9, color: Colors.white70)),
+                            Text(
+                              _esSoloHfc(tipoContratoCerrado, ptosCerrado, rguFtthCerrado, rguNeutraCerrado)
+                                  ? 'PTS/día'
+                                  : 'RGU/día',
+                              style: const TextStyle(fontSize: 9, color: Colors.white70),
+                            ),
                             const SizedBox(height: 6),
                             Text(
-                              '${totalCerrado.toInt()} RGU • $ordCerrado órd.',
+                              _esSoloHfc(tipoContratoCerrado, ptosCerrado, rguFtthCerrado, rguNeutraCerrado)
+                                  ? '${ptosCerrado.toInt()} PTS • $ordCerrado órd.'
+                                  : _esMixto(tipoContratoCerrado, ptosCerrado, rguFtthCerrado, rguNeutraCerrado)
+                                      ? '${ptosCerrado.toInt()} PTS • ${totalCerrado.toInt()} RGU • $ordCerrado órd.'
+                                      : '${totalCerrado.toInt()} RGU • $ordCerrado órd.',
                               style: const TextStyle(fontSize: 10, color: Colors.white70),
                             ),
                             Text(
@@ -1301,7 +1511,9 @@ class _TuMesScreenState extends State<TuMesScreen> {
                       child: Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: _colorRGU(rguActual),
+                          color: _esSoloHfc(tipoContratoActual, ptosActual, rguFtthActual, rguNeutraActual)
+                              ? _colorPts(promedioPtsActual)
+                              : _colorRGU(rguActual),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                             color: Colors.white.withOpacity(0.3),
@@ -1332,17 +1544,27 @@ class _TuMesScreenState extends State<TuMesScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              rguActual.toStringAsFixed(1),
+                              _esSoloHfc(tipoContratoActual, ptosActual, rguFtthActual, rguNeutraActual)
+                                  ? promedioPtsActual.toStringAsFixed(1)
+                                  : rguActual.toStringAsFixed(1),
                               style: const TextStyle(
                                   fontSize: 28,
                                   fontWeight: FontWeight.bold,
                                   color: Colors.white),
                             ),
-                            const Text('RGU/día',
-                                style: TextStyle(fontSize: 9, color: Colors.white70)),
+                            Text(
+                              _esSoloHfc(tipoContratoActual, ptosActual, rguFtthActual, rguNeutraActual)
+                                  ? 'PTS/día'
+                                  : 'RGU/día',
+                              style: const TextStyle(fontSize: 9, color: Colors.white70),
+                            ),
                             const SizedBox(height: 6),
                             Text(
-                              '${totalActual.toInt()} RGU • $ordActual órd.',
+                              _esSoloHfc(tipoContratoActual, ptosActual, rguFtthActual, rguNeutraActual)
+                                  ? '${ptosActual.toInt()} PTS • $ordActual órd.'
+                                  : _esMixto(tipoContratoActual, ptosActual, rguFtthActual, rguNeutraActual)
+                                      ? '${ptosActual.toInt()} PTS • ${totalActual.toInt()} RGU • $ordActual órd.'
+                                      : '${totalActual.toInt()} RGU • $ordActual órd.',
                               style: const TextStyle(fontSize: 10, color: Colors.white70),
                             ),
                             Text(

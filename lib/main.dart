@@ -17,6 +17,7 @@ import 'package:trazabox/services/estado_supervisor_service.dart';
 import 'package:trazabox/services/supabase_service.dart';
 import 'package:trazabox/screens/splash_screen.dart';
 import 'package:trazabox/screens/registro_screen.dart';
+import 'package:trazabox/screens/desbloqueo_app_screen.dart';
 import 'package:trazabox/screens/home_screen.dart';
 import 'package:trazabox/screens/asistente_cto_screen.dart';
 import 'package:trazabox/screens/asistente_crea_terreno_screen.dart';
@@ -32,6 +33,7 @@ import 'package:trazabox/services/kepler_polling_service.dart';
 import 'package:trazabox/services/notificacion_service.dart';
 import 'package:trazabox/services/alarm_audio_service.dart';
 import 'package:trazabox/services/notification_service.dart' as notification_service;
+import 'package:trazabox/services/update_service.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -280,8 +282,33 @@ void _configurarListenerAlertasAutomaticas() {
   print('✅ Listeners de alertas configurados (no_se_bajo, fuera_de_rango, en_movimiento)');
 }
 
-class AgenteDesconexionesApp extends StatelessWidget {
+class AgenteDesconexionesApp extends StatefulWidget {
   const AgenteDesconexionesApp({super.key});
+
+  @override
+  State<AgenteDesconexionesApp> createState() => _AgenteDesconexionesAppState();
+}
+
+class _AgenteDesconexionesAppState extends State<AgenteDesconexionesApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      UpdateService.tryDeletePendingTrazaBoxApk();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -317,7 +344,9 @@ class AgenteDesconexionesApp extends StatelessWidget {
 Future<String> _getRolUsuario() async {
   try {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('rol_usuario') ?? 'tecnico';
+    return prefs.getString('user_rol') ??
+        prefs.getString('rol_usuario') ??
+        'tecnico';
   } catch (e) {
     print('Error obteniendo rol: $e');
     return 'tecnico';
@@ -437,6 +466,11 @@ class AppWrapper extends StatelessWidget {
         if (auth.necesitaRegistro) {
           return const RegistroScreen();
         }
+
+        // Dispositivo registrado pero falta validar contraseña en esta sesión
+        if (auth.isAuthenticated && auth.requiereDesbloqueoSesion) {
+          return const DesbloqueoAppScreen();
+        }
         
         // Dispositivo registrado -> Navegar según rol
         if (auth.isAuthenticated) {
@@ -456,13 +490,8 @@ class AppWrapper extends StatelessWidget {
               if (rol == 'bodeguero') {
                 return const BodegueroMenuScreen();
               }
-              
-              // Supervisores van directo a Mi Equipo
-              if (rol == 'supervisor') {
-                return const MiEquipoScreen();
-              }
-              
-              // ITOs y técnicos van a HomeScreen (ITOs tienen acceso a Mi Equipo desde ahí)
+
+              // Supervisores, ITO y técnicos: inicio en Home (Mi Equipo desde el botón del home).
               return const HomeScreen();
             },
           );

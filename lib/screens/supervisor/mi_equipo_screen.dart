@@ -185,7 +185,13 @@ class _MiEquipoScreenState extends State<MiEquipoScreen> {
         ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            } else {
+              Navigator.of(context).pushNamedAndRemoveUntil('/home', (r) => false);
+            }
+          },
         ),
         actions: [
           IconButton(

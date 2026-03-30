@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/calidad_traza_service.dart';
+import '../services/produccion_service.dart';
 import '../widgets/creaciones_loading.dart';
 
 class CalidadDetalleScreen extends StatefulWidget {
@@ -12,15 +13,22 @@ class CalidadDetalleScreen extends StatefulWidget {
 }
 
 class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
-  final CalidadTrazaService _service = CalidadTrazaService();
+  final CalidadTrazaService _calidadService = CalidadTrazaService();
+  final ProduccionService _produccionService = ProduccionService();
 
   bool _cargando = true;
   String? _tecnicoRut;
+  String _tipoContrato = 'nuevo'; // 'nuevo' = consolidada; 'antiguo' = por tecnología
 
   // Calidad por período
   Map<String, dynamic>? _calFeb;
   Map<String, dynamic>? _calMar;
   Map<String, dynamic>? _calAbr;
+
+  // Q de producción (ordenesCompletadas) por período, para alinear denominador
+  int _prodFeb = 0;
+  int _prodMar = 0;
+  int _prodAbr = 0;
 
   late String _periodoFeb;
   late String _periodoMar;
@@ -29,10 +37,19 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
   @override
   void initState() {
     super.initState();
-    _periodoFeb = _service.getPeriodoCerrado();
-    _periodoMar = _service.getPeriodoMidiendo();
-    _periodoAbr = _service.getPeriodoProximo();
+    _periodoFeb = _calidadService.getPeriodoCerrado();
+    _periodoMar = _calidadService.getPeriodoMidiendo();
+    _periodoAbr = _calidadService.getPeriodoProximo();
     _cargarDatos();
+  }
+
+  /// Parsea periodo "MM-YYYY" a mes y anno
+  (int, int) _parsePeriodo(String periodo) {
+    final partes = periodo.split('-');
+    if (partes.length != 2) return (0, 0);
+    final mes = int.tryParse(partes[0]) ?? 0;
+    final anno = int.tryParse(partes[1]) ?? 0;
+    return (mes, anno);
   }
 
   Future<void> _cargarDatos() async {
@@ -46,17 +63,47 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
     }
 
     try {
-      final resultados = await Future.wait([
-        _service.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoFeb),
-        _service.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoMar),
-        _service.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoAbr),
+      final tipoContrato = await _calidadService.obtenerTipoContrato(_tecnicoRut!, prefs: prefs);
+
+      // Q de producción por período (mes de medición)
+      final (mesFeb, annoFeb) = _parsePeriodo(_periodoFeb);
+      final (mesMar, annoMar) = _parsePeriodo(_periodoMar);
+      final (mesAbr, annoAbr) = _parsePeriodo(_periodoAbr);
+
+      final prodResultados = await Future.wait([
+        mesFeb > 0 ? _produccionService.obtenerResumenMesRGU(_tecnicoRut!, mes: mesFeb, anno: annoFeb) : Future.value(<String, dynamic>{}),
+        mesMar > 0 ? _produccionService.obtenerResumenMesRGU(_tecnicoRut!, mes: mesMar, anno: annoMar) : Future.value(<String, dynamic>{}),
+        mesAbr > 0 ? _produccionService.obtenerResumenMesRGU(_tecnicoRut!, mes: mesAbr, anno: annoAbr) : Future.value(<String, dynamic>{}),
       ]);
+
+      final prodFeb = (prodResultados[0]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
+      final prodMar = (prodResultados[1]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
+      final prodAbr = (prodResultados[2]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
+
+      List<Map<String, dynamic>?> calidadResultados;
+      if (tipoContrato == 'antiguo') {
+        calidadResultados = await Future.wait([
+          _calidadService.obtenerCalidadPorPeriodoPorTecnologia(_tecnicoRut!, _periodoFeb),
+          _calidadService.obtenerCalidadPorPeriodoPorTecnologia(_tecnicoRut!, _periodoMar),
+          _calidadService.obtenerCalidadPorPeriodoPorTecnologia(_tecnicoRut!, _periodoAbr),
+        ]);
+      } else {
+        calidadResultados = await Future.wait([
+          _calidadService.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoFeb),
+          _calidadService.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoMar),
+          _calidadService.obtenerCalidadPorPeriodo(_tecnicoRut!, _periodoAbr),
+        ]);
+      }
 
       if (mounted) {
         setState(() {
-          _calFeb = resultados[0] as Map<String, dynamic>?;
-          _calMar = resultados[1] as Map<String, dynamic>?;
-          _calAbr = resultados[2] as Map<String, dynamic>?;
+          _tipoContrato = tipoContrato;
+          _calFeb = calidadResultados[0];
+          _calMar = calidadResultados[1];
+          _calAbr = calidadResultados[2];
+          _prodFeb = prodFeb;
+          _prodMar = prodMar;
+          _prodAbr = prodAbr;
           _cargando = false;
         });
       }
@@ -113,6 +160,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
                           periodo: _periodoFeb,
                           calidad: _calFeb,
                           estado: _EstadoBono.cerrado,
+                          completadasOverride: _prodFeb,
                         ),
                         const SizedBox(height: 12),
 
@@ -121,6 +169,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
                           periodo: _periodoMar,
                           calidad: _calMar,
                           estado: _EstadoBono.midiendo,
+                          completadasOverride: _prodMar,
                         ),
                         const SizedBox(height: 12),
 
@@ -131,6 +180,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
                           estado: _calAbr != null
                               ? _EstadoBono.midiendo
                               : _EstadoBono.proximo,
+                          completadasOverride: _prodAbr,
                         ),
                         const SizedBox(height: 24),
                       ],
@@ -143,23 +193,29 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
   // ── Gráfico de evolución ───────────────────────────────────────────────────
 
   Widget _buildEvolucionChart() {
-    final pctFeb = (_calFeb?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
-    final pctMar = (_calMar?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
-    final pctAbr = (_calAbr?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+    final reitFeb = (_calFeb?['total_reiterados'] as num?)?.toInt() ?? 0;
+    final reitMar = (_calMar?['total_reiterados'] as num?)?.toInt() ?? 0;
+    final reitAbr = (_calAbr?['total_reiterados'] as num?)?.toInt() ?? 0;
+    final compFeb = _prodFeb > 0 ? _prodFeb : (_calFeb?['total_completadas'] as num?)?.toInt() ?? 0;
+    final compMar = _prodMar > 0 ? _prodMar : (_calMar?['total_completadas'] as num?)?.toInt() ?? 0;
+    final compAbr = _prodAbr > 0 ? _prodAbr : (_calAbr?['total_completadas'] as num?)?.toInt() ?? 0;
+    final pctFeb = compFeb > 0 ? reitFeb / compFeb * 100 : 0.0;
+    final pctMar = compMar > 0 ? reitMar / compMar * 100 : 0.0;
+    final pctAbr = compAbr > 0 ? reitAbr / compAbr * 100 : 0.0;
 
     final puntos = [
       _PuntoEvolucion(
-        label: 'BONO ${_service.getNombreBono(_periodoFeb)}',
+        label: 'BONO ${_calidadService.getNombreBono(_periodoFeb)}',
         pct: pctFeb,
         tieneData: _calFeb != null,
       ),
       _PuntoEvolucion(
-        label: 'BONO ${_service.getNombreBono(_periodoMar)}',
+        label: 'BONO ${_calidadService.getNombreBono(_periodoMar)}',
         pct: pctMar,
         tieneData: _calMar != null,
       ),
       _PuntoEvolucion(
-        label: 'BONO ${_service.getNombreBono(_periodoAbr)}',
+        label: 'BONO ${_calidadService.getNombreBono(_periodoAbr)}',
         pct: pctAbr,
         tieneData: _calAbr != null,
       ),
@@ -231,20 +287,29 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
 
   // ── Card de bono con ranking embebido ────────────────────────────────────
 
+  static const _coloresTec = {
+    'HFC': Colors.orange,
+    'FTTH': Colors.purple,
+    'RED_NEUTRA': Colors.cyan,
+  };
+
   Widget _buildBonoCard({
     required String periodo,
     required Map<String, dynamic>? calidad,
     required _EstadoBono estado,
+    int completadasOverride = 0,
   }) {
-    final nombreBono = _service.getNombreBono(periodo);
-    final infoPeriodo = _service.getInfoPeriodo(periodo);
+    final nombreBono = _calidadService.getNombreBono(periodo);
+    final infoPeriodo = _calidadService.getInfoPeriodo(periodo);
 
-    final pct = (calidad?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
     final reiterados = (calidad?['total_reiterados'] as num?)?.toInt() ?? 0;
-    final completadas = (calidad?['total_completadas'] as num?)?.toInt() ?? 0;
+    final completadasOrig = (calidad?['total_completadas'] as num?)?.toInt() ?? 0;
+    final completadas = completadasOverride > 0 ? completadasOverride : completadasOrig;
+    final pct = completadas > 0 ? reiterados / completadas * 100 : 0.0;
     final detalle = List<Map<String, dynamic>>.from(
       (calidad?['detalle'] as List?) ?? [],
     );
+    final porTec = (calidad?['por_tecnologia'] as List?)?.cast<Map<String, dynamic>>() ?? [];
 
     final colorPct = _colorCalidad(pct);
     final sinDatos = calidad == null;
@@ -307,7 +372,52 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
         children: sinDatos
             ? [_buildSinDatosMsg(estado)]
             : [
-                // Resumen métricas
+                // Contrato antiguo: desglose por tecnología
+                if (_tipoContrato == 'antiguo' && porTec.isNotEmpty) ...[
+                  ...porTec.map((t) {
+                    final tec = t['tecnologia']?.toString() ?? '';
+                    final reit = (t['reiterados'] as num?)?.toInt() ?? 0;
+                    final comp = (t['completadas'] as num?)?.toInt() ?? 0;
+                    final pctTec = comp > 0 ? reit / comp * 100 : 0.0;
+                    final color = _coloresTec[tec] ?? colorPct;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: color.withOpacity(0.3)),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: color.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(tec, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+                                ),
+                                const SizedBox(width: 12),
+                                Text('$reit/$comp', style: TextStyle(fontSize: 13, color: Colors.grey[300])),
+                              ],
+                            ),
+                            Text(
+                              '${pctTec.toStringAsFixed(1)}%',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 16),
+                ],
+                // Resumen métricas (consolidado)
                 _buildResumenMetricas(pct, reiterados, completadas, colorPct),
                 const SizedBox(height: 16),
 
@@ -430,7 +540,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
               _badge(ordenOriginal, Colors.green),
               const SizedBox(width: 8),
               Text(
-                _service.formatearFecha(fechaOriginal),
+                _calidadService.formatearFecha(fechaOriginal),
                 style: TextStyle(fontSize: 11, color: Colors.grey[400]),
               ),
               if (tipoActividad.isNotEmpty) ...[
@@ -446,7 +556,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
               _badge(ordenReiterada.isNotEmpty ? ordenReiterada : 'Sin OT', Colors.orange),
               const SizedBox(width: 8),
               Text(
-                _service.formatearFecha(fechaReiterada),
+                _calidadService.formatearFecha(fechaReiterada),
                 style: TextStyle(fontSize: 11, color: Colors.grey[400]),
               ),
               const Spacer(),

@@ -4,9 +4,32 @@
 
 import 'dart:math' as math;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'produccion_service.dart';
 
 class MiEquipoDataService {
   final _supabase = Supabase.instance.client;
+
+  /// Usa ProduccionService.cuentaComoProduccion para consistencia
+  static bool _cuentaComoProduccion(dynamic r) =>
+      ProduccionService.cuentaComoProduccion(r);
+
+  /// Expande RUTs con variantes (12345678-9, 12.345.678-9) para búsquedas en produccion
+  static List<String> _rutsConVariantes(List<String> ruts) {
+    final expandidos = <String>{};
+    for (final r in ruts) {
+      expandidos.addAll(ProduccionService.rutVariantes(r));
+    }
+    final lista = expandidos.where((x) => x.isNotEmpty).toList();
+    return lista.isNotEmpty ? lista : List.from(ruts);
+  }
+
+  /// Evalúa si es_reiterado indica reiteración (acepta bool, int 1, "true", "SI")
+  static bool _esReiterado(dynamic val) {
+    if (val == null) return false;
+    if (val == true || val == 1) return true;
+    final s = val.toString().trim().toUpperCase();
+    return s == 'TRUE' || s == 'SI' || s == 'YES' || s == '1';
+  }
 
   /// Días hábiles transcurridos en el mes seleccionado.
   /// Si es mes actual: hasta hoy. Si es mes pasado: todos los días hábiles.
@@ -86,11 +109,12 @@ class MiEquipoDataService {
       final fechaPunto = '$dd.$mm.$yy';
       final fechaBarra = '$dd/$mm/$yy';
 
+      final rutsLista = _rutsConVariantes(ruts);
       final resp = await _supabase
           .from('produccion')
           .select('codigo_tecnico')
           .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
-          .inFilter('rut_tecnico', ruts);
+          .inFilter('rut_tecnico', rutsLista);
 
       final codigos = <String>{};
       for (final r in resp as List) {
@@ -116,20 +140,24 @@ class MiEquipoDataService {
     try {
       final mm = mesSeleccionado.month.toString().padLeft(2, '0');
       final yy = mesSeleccionado.year.toString().substring(2);
+      final yy4 = mesSeleccionado.year.toString();
       final sufPunto = '.$mm.$yy';
       final sufBarra = '/$mm/$yy';
+      final sufPunto4 = '.$mm.$yy4';
+      final sufBarra4 = '/$mm/$yy4';
 
+      final rutsLista = _rutsConVariantes(rutsEquipo);
       final resp = await _supabase
           .from('produccion')
-          .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, rgu_total, es_px0, fecha_trabajo')
-          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra')
-          .inFilter('rut_tecnico', rutsEquipo);
+          .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, area_derivacion, rgu_total, es_px0, fecha_trabajo')
+          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4')
+          .inFilter('rut_tecnico', rutsLista);
 
       final lista = resp as List;
       int completadas = 0;
       double totalRgu = 0;
       for (final r in lista) {
-        if (r['estado'] == 'Completado') {
+        if (_cuentaComoProduccion(r)) {
           completadas++;
           totalRgu += ((r['rgu_total'] as num?) ?? 0).toDouble();
         }
@@ -171,11 +199,12 @@ class MiEquipoDataService {
       final fechaPunto = '$dd.$mm.$yy';
       final fechaBarra = '$dd/$mm/$yy';
 
+      final rutsLista = _rutsConVariantes(rutsEquipo);
       final resp = await _supabase
           .from('produccion')
-          .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, rgu_total, es_px0')
+          .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, area_derivacion, rgu_total, es_px0')
           .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
-          .inFilter('rut_tecnico', rutsEquipo);
+          .inFilter('rut_tecnico', rutsLista);
 
       final lista = (resp as List).cast<Map<String, dynamic>>();
       final activosRuts = <String>{};
@@ -188,11 +217,12 @@ class MiEquipoDataService {
         final rut = r['rut_tecnico'] as String? ?? '';
         final estado = r['estado'] as String? ?? '';
         final esPx0 = r['es_px0'] == true;
+        final cuentaComoProd = _cuentaComoProduccion(r);
 
-        if (estado == 'Completado' || estado == 'Iniciado') {
+        if (cuentaComoProd || estado == 'Iniciado') {
           activosRuts.add(rut);
         }
-        if (estado == 'Completado') {
+        if (cuentaComoProd) {
           rguHoy += ((r['rgu_total'] as num?) ?? 0).toDouble();
         }
 
@@ -201,11 +231,11 @@ class MiEquipoDataService {
         if (esPx0) {
           px0List.add({
             ...r,
-            'tiene_trabajo_cargado': estado == 'Completado' || estado == 'Iniciado',
+            'tiene_trabajo_cargado': cuentaComoProd || estado == 'Iniciado',
           });
         }
 
-        if (estado == 'No Realizada' ||
+        if (estado == 'No Realizada' && (r['area_derivacion']?.toString() ?? '').trim().toUpperCase() != 'GSA' && (r['area_derivacion']?.toString() ?? '').trim().toUpperCase() != 'REDES' ||
             estado == 'Cancelado' ||
             estado == 'Suspendido') {
           quiebre++;
@@ -242,7 +272,8 @@ class MiEquipoDataService {
     }
   }
 
-  /// Calidad mes (reiteración) — periodo formato MM-YYYY
+  /// Calidad mes (reiteración) — total desde PRODUCCION; si 0, desde calidad_api_script
+  /// Reiterados desde calidad_api_script
   Future<Map<String, dynamic>> obtenerCalidadMes(
       List<String> rutsEquipo, DateTime mesSeleccionado) async {
     if (rutsEquipo.isEmpty) {
@@ -252,6 +283,7 @@ class MiEquipoDataService {
       final periodo =
           '${mesSeleccionado.month.toString().padLeft(2, '0')}-${mesSeleccionado.year}';
 
+      // Reiterados y total desde calidad_api_script
       final resp = await _supabase
           .from('calidad_api_script')
           .select('rut_o_bucket, es_reiterado')
@@ -261,9 +293,14 @@ class MiEquipoDataService {
       final lista = resp as List;
       int reiterados = 0;
       for (final r in lista) {
-        if (r['es_reiterado'] == true) reiterados++;
+        if (_esReiterado(r['es_reiterado'])) reiterados++;
       }
-      final total = lista.length;
+      final totalCalidad = lista.length;
+
+      // Total: preferir produccion; si 0, usar calidad_api_script
+      final prod = await obtenerProduccionMes(rutsEquipo, mesSeleccionado);
+      final totalProd = prod['total_completadas'] as int? ?? 0;
+      final total = totalProd > 0 ? totalProd : totalCalidad;
       final porcentaje = total > 0 ? (reiterados / total) * 100 : 0.0;
 
       return {
@@ -307,7 +344,8 @@ class MiEquipoDataService {
       int quiebre = 0;
       for (final r in registros) {
         final estado = r['estado'] as String? ?? '';
-        if (estado == 'No Realizada' ||
+        final areaDerivacion = r['area_derivacion']?.toString() ?? '';
+        if (estado == 'No Realizada' && areaDerivacion.toUpperCase() != 'GSA' && areaDerivacion.toUpperCase() != 'REDES' ||
             estado == 'Cancelado' ||
             estado == 'Suspendido') quiebre++;
       }
@@ -334,14 +372,18 @@ class MiEquipoDataService {
       final mesAnt = DateTime(mesSeleccionado.year, mesSeleccionado.month - 1);
       final mm = mesAnt.month.toString().padLeft(2, '0');
       final yy = mesAnt.year.toString().substring(2);
+      final yy4 = mesAnt.year.toString();
       final sufPunto = '.$mm.$yy';
       final sufBarra = '/$mm/$yy';
+      final sufPunto4 = '.$mm.$yy4';
+      final sufBarra4 = '/$mm/$yy4';
 
+      final rutsLista = _rutsConVariantes(rutsEquipo);
       final respProd = await _supabase
           .from('produccion')
-          .select('rut_tecnico, estado, rgu_total')
-          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra')
-          .inFilter('rut_tecnico', rutsEquipo);
+          .select('rut_tecnico, estado, area_derivacion, rgu_total')
+          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4')
+          .inFilter('rut_tecnico', rutsLista);
 
       final periodoAnt = '$mm-${mesAnt.year}';
       final respCalidad = await _supabase
@@ -356,10 +398,11 @@ class MiEquipoDataService {
       int quiebre = 0;
       for (final r in listaProd) {
         final estado = r['estado'] as String? ?? '';
-        if (estado == 'Completado') {
+        final areaDerivacion = r['area_derivacion']?.toString() ?? '';
+        if (_cuentaComoProduccion(r)) {
           completadas++;
           totalRgu += ((r['rgu_total'] as num?) ?? 0).toDouble();
-        } else if (estado == 'No Realizada' ||
+        } else if (estado == 'No Realizada' && areaDerivacion.toUpperCase() != 'GSA' && areaDerivacion.toUpperCase() != 'REDES' ||
             estado == 'Cancelado' ||
             estado == 'Suspendido') {
           quiebre++;
@@ -369,10 +412,10 @@ class MiEquipoDataService {
       final listaCal = respCalidad as List;
       int reiterados = 0;
       for (final r in listaCal) {
-        if (r['es_reiterado'] == true) reiterados++;
+        if (_esReiterado(r['es_reiterado'])) reiterados++;
       }
-      final totalCal = listaCal.length;
-      final reiteracion = totalCal > 0 ? (reiterados / totalCal) * 100 : 0.0;
+      // Usar completadas de produccion como denominador (mismo criterio que calidad)
+      final reiteracion = completadas > 0 ? (reiterados / completadas) * 100 : 0.0;
       final totalProd = listaProd.length;
       final quiebrePct = totalProd > 0 ? (quiebre / totalProd) * 100 : 0.0;
 
@@ -407,15 +450,14 @@ class MiEquipoDataService {
 
       final resp = await _supabase
           .from('produccion')
-          .select('rut_tecnico, tecnico, estado, rgu_total')
+          .select('rut_tecnico, tecnico, estado, area_derivacion, rgu_total')
           .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
-          .inFilter('rut_tecnico', rutsEquipo);
+          .inFilter('rut_tecnico', _rutsConVariantes(rutsEquipo));
 
       final mapa = <String, Map<String, dynamic>>{};
       for (final r in resp as List) {
         final rut = r['rut_tecnico'] as String? ?? '';
         final nombre = r['tecnico'] as String? ?? '';
-        final estado = r['estado'] as String? ?? '';
         final rgu = ((r['rgu_total'] as num?) ?? 0).toDouble();
 
         if (!mapa.containsKey(rut)) {
@@ -430,7 +472,7 @@ class MiEquipoDataService {
         }
         final m = mapa[rut]!;
         m['total'] = (m['total'] as int) + 1;
-        if (estado == 'Completado') {
+        if (_cuentaComoProduccion(r)) {
           m['completadas'] = (m['completadas'] as int) + 1;
           m['rgu_dia'] = (m['rgu_dia'] as double) + rgu;
         }

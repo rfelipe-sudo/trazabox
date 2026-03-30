@@ -137,14 +137,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
     
     if (confirmed == true && mounted) {
-      // Detener monitoreo global de ayuda antes de cerrar sesión
       AyudaService().detenerMonitoreoGlobal();
       await context.read<AuthProvider>().logout();
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const RegistroScreen()),
-        );
-      }
+      // AppWrapper vuelve a mostrar RegistroScreen (no usar push: se salía del wrapper).
     }
   }
 

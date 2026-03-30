@@ -924,6 +924,11 @@ class ProduccionService {
       conPuntos = grupos.join('.') + '-$dv';
     }
     final variantes = <String>{s, conGuion, conPuntos};
+    // Algunas tablas (ej. calidad_api_script.rut_o_bucket) guardan RUT sin guión: 123456789
+    if (partes.length >= 2) {
+      final sinGuion = '$run${partes.sublist(1).join()}';
+      if (sinGuion.isNotEmpty) variantes.add(sinGuion);
+    }
     return variantes.where((v) => v.isNotEmpty).toList();
   }
 
@@ -1028,6 +1033,9 @@ class ProduccionService {
     final now = DateTime.now();
     final mesConsulta = mes ?? now.month;
     final annoConsulta = anno ?? now.year;
+
+    // DEBUG TEMPORAL 1: valores de filtro
+    debugPrint('🔍 [ResumenRGU] mesConsulta=$mesConsulta, annoConsulta=$annoConsulta (rut=$rutTecnico)');
 
     try {
       // Obtener tipo de turno Y tipo de contrato del técnico
@@ -1164,6 +1172,14 @@ class ProduccionService {
 
         return mesOrden == mesConsulta && annoOrden == annoConsulta;
       }).toList();
+
+      // DEBUG TEMPORAL 2 y 3: órdenes por RUT y después del filtro
+      debugPrint('🔍 [ResumenRGU] responseRut (órdenes por RUT antes de filtrar): ${ordenesPorRut.length}');
+      debugPrint('🔍 [ResumenRGU] ordenesMes (después de filtrar por mes=$mesConsulta año=$annoConsulta): ${ordenesMes.length}');
+      if (todasOrdenes.isNotEmpty && ordenesMes.isEmpty) {
+        final ejemplos = todasOrdenes.take(3).map((o) => o['fecha_trabajo']?.toString() ?? 'null').toList();
+        debugPrint('🔍 [ResumenRGU] Ejemplos fecha_trabajo en todasOrdenes: $ejemplos');
+      }
 
       if (ordenesMes.isEmpty) {
         final hayDatosGeo = marcas.diasTrabajados > 0 || marcas.diasAusentes > 0 || 
@@ -1455,6 +1471,9 @@ class ProduccionService {
     final mesConsulta = mes ?? now.month;
     final annoConsulta = anno ?? now.year;
 
+    // DEBUG TEMPORAL 1: valores de filtro
+    debugPrint('🔍 [DetalleRGU] mesConsulta=$mesConsulta, annoConsulta=$annoConsulta (rut=$rutTecnico)');
+
     try {
       // ═══════════════════════════════════════════════════════════════════
       // BÚSQUEDA HÍBRIDA: Por RUT y por NOMBRE (fix para datos legacy)
@@ -1471,6 +1490,9 @@ class ProduccionService {
             .limit(10000);
         ordenesPorRut = responseRut as List? ?? [];
       }
+
+      // DEBUG TEMPORAL 2: órdenes traídas por RUT antes del filtro en memoria
+      debugPrint('🔍 [DetalleRGU] responseRut (órdenes por RUT antes de filtrar): ${ordenesPorRut.length}');
 
       // 2️⃣ Obtener nombre del técnico
       String? nombreTecnico;
@@ -1535,6 +1557,13 @@ class ProduccionService {
 
         return mesOrden == mesConsulta && annoOrden == annoConsulta;
       }).toList();
+
+      // DEBUG TEMPORAL 3: órdenes después del filtro mes/año
+      debugPrint('🔍 [DetalleRGU] ordenesMes (después de filtrar por mes=$mesConsulta año=$annoConsulta): ${ordenesMes.length}');
+      if (todasOrdenes.isNotEmpty && ordenesMes.isEmpty) {
+        final ejemplos = todasOrdenes.take(3).map((o) => o['fecha_trabajo']?.toString() ?? 'null').toList();
+        debugPrint('🔍 [DetalleRGU] Ejemplos fecha_trabajo en todasOrdenes: $ejemplos');
+      }
 
       // DEBUG TEMPORAL: febrero 2026, rut 11222678-8
       if (mesConsulta == 2 && annoConsulta == 2026 && rutTecnico.contains('11222678')) {

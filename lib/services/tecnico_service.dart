@@ -9,13 +9,16 @@ class TecnicoData {
   final String telefono;
   final String nombre;
   final String rol;
+  /// Cuerpo del RUT solo dígitos (sin DV), opcional
+  final String? rutCuerpo;
   final DateTime createdAt;
 
   TecnicoData({
     required this.deviceId,
-    required this.telefono,
+    this.telefono = '',
     required this.nombre,
     this.rol = 'tecnico',
+    this.rutCuerpo,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -25,6 +28,7 @@ class TecnicoData {
       telefono: json['telefono'] ?? '',
       nombre: json['nombre'] ?? '',
       rol: json['rol'] ?? 'tecnico',
+      rutCuerpo: json['rut_cuerpo'] as String?,
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'])
           : DateTime.now(),
@@ -36,6 +40,7 @@ class TecnicoData {
     'telefono': telefono,
     'nombre': nombre,
     'rol': rol,
+    if (rutCuerpo != null) 'rut_cuerpo': rutCuerpo,
     'created_at': createdAt.toIso8601String(),
   };
 
@@ -100,9 +105,10 @@ class TecnicoService {
 
   /// Registra un nuevo técnico
   static Future<TecnicoData?> registrarTecnico({
-    required String telefono,
+    String telefono = '',
     required String nombre,
     String rol = 'tecnico',
+    String? rutCuerpo,
   }) async {
     try {
       final deviceId = await getDeviceId();
@@ -112,6 +118,7 @@ class TecnicoService {
         telefono: telefono,
         nombre: nombre,
         rol: rol,
+        rutCuerpo: rutCuerpo,
       );
       
       // Simular llamada al backend: POST /tecnico
@@ -121,7 +128,7 @@ class TecnicoService {
       // Guardar en storage local
       await _guardarEnLocal(tecnico);
       
-      print('✅ Técnico registrado: ${tecnico.nombre} (${tecnico.telefono})');
+      print('✅ Técnico registrado: ${tecnico.nombre}');
       return tecnico;
     } catch (e) {
       print('❌ Error registrando técnico: $e');
@@ -148,14 +155,39 @@ class TecnicoService {
   }
 
   /// Valida el RUT contra técnicos y supervisores.
-  /// Primero revisa `tecnicos_traza_zc`; si no está, revisa `supervisores_traza`.
+  /// PRIMERO revisa `supervisores_traza` (prioridad); si no está, revisa `tecnicos_traza_zc`.
+  /// Así usuarios que están en ambas tablas (ej: ex-técnicos ahora supervisores) se ven como supervisor.
   /// Retorna mapa con 'nombre', 'rol', 'tipo_contrato' o null si no existe.
   static Future<Map<String, dynamic>?> validarRutEnProduccion(String rut) async {
     try {
       print('🔍 [ValidarRUT] ════════════════════════════════');
       print('🔍 [ValidarRUT] RUT: "$rut"');
 
-      // ── 1. Buscar en técnicos ──────────────────────────────
+      // ── 1. PRIMERO buscar en supervisores ────────────────────
+      final respSup = await _supabase
+          .from('supervisores_traza')
+          .select('rut, nombre, cargo, activo')
+          .eq('rut', rut)
+          .eq('activo', true)
+          .limit(1)
+          .maybeSingle();
+
+      if (respSup != null) {
+        final nombreSup = respSup['nombre']?.toString() ?? 'Supervisor';
+        final cargo = (respSup['cargo']?.toString() ?? 'supervisor').trim().toLowerCase();
+        final rol = cargo.contains('ito') ? 'ito' : 'supervisor';
+        print('✅ [ValidarRUT] Supervisor encontrado: $nombreSup | cargo: $cargo');
+        return {
+          'rut': rut,
+          'nombre': nombreSup.isNotEmpty ? nombreSup : 'Supervisor',
+          'existe': true,
+          'rol': rol,
+          'tipo_contrato': 'supervisor',
+        };
+      }
+
+      // ── 2. Si no es supervisor, buscar en técnicos ───────────
+      print('🔍 [ValidarRUT] No encontrado en supervisores. Revisando técnicos...');
       final respTec = await _supabase
           .from('tecnicos_traza_zc')
           .select('rut, nombre_completo, activo, tipo_contrato')
@@ -174,29 +206,6 @@ class TecnicoService {
           'existe': true,
           'rol': 'tecnico',
           'tipo_contrato': tipoContrato,
-        };
-      }
-
-      // ── 2. Buscar en supervisores ──────────────────────────
-      print('🔍 [ValidarRUT] No encontrado en técnicos. Revisando supervisores...');
-      final respSup = await _supabase
-          .from('supervisores_traza')
-          .select('rut, nombre, cargo, activo')
-          .eq('rut', rut)
-          .eq('activo', true)
-          .limit(1)
-          .maybeSingle();
-
-      if (respSup != null) {
-        final nombreSup = respSup['nombre']?.toString() ?? 'Supervisor';
-        final cargo = respSup['cargo']?.toString() ?? 'supervisor';
-        print('✅ [ValidarRUT] Supervisor encontrado: $nombreSup | cargo: $cargo');
-        return {
-          'rut': rut,
-          'nombre': nombreSup.isNotEmpty ? nombreSup : 'Supervisor',
-          'existe': true,
-          'rol': cargo, // 'supervisor' o 'ito'
-          'tipo_contrato': 'supervisor',
         };
       }
 

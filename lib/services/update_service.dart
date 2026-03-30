@@ -14,7 +14,34 @@ class UpdateService {
   static const String _versionFile = 'version.json';
   static const String _apkFile = 'trazabox.apk';
 
+  /// Solo este nombre se borra tras instalar (no otros APK del dispositivo).
+  static const String localUpdateApkFileName = 'trazabox_update.apk';
+
+  static String? _apkPathPendingDeletion;
+
   final Dio _dio = Dio();
+
+  /// Marca el APK descargado para borrarlo al volver a la app tras el instalador.
+  static void markTrazaBoxApkForDeletionAfterInstall(String filePath) {
+    if (!filePath.endsWith(localUpdateApkFileName)) return;
+    _apkPathPendingDeletion = filePath;
+  }
+
+  /// Borra el APK de actualización TrazaBox si estaba pendiente (p. ej. al reanudar la app).
+  static Future<void> tryDeletePendingTrazaBoxApk() async {
+    final p = _apkPathPendingDeletion;
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (await f.exists()) {
+        await f.delete();
+        print('🗑️ [UpdateService] APK TrazaBox eliminado: $p');
+      }
+      _apkPathPendingDeletion = null;
+    } catch (e) {
+      print('⚠️ [UpdateService] No se pudo eliminar el APK: $e');
+    }
+  }
 
   /// Verifica si hay una actualización disponible
   Future<UpdateInfo?> checkForUpdate() async {
@@ -71,7 +98,7 @@ class UpdateService {
         return null;
       }
 
-      final filePath = '${dir.path}/trazabox_update.apk';
+      final filePath = '${dir.path}/$localUpdateApkFileName';
       final file = File(filePath);
 
       // Eliminar archivo anterior si existe
@@ -118,6 +145,10 @@ class UpdateService {
         print('❌ Error abriendo APK: ${result.message}');
         return false;
       }
+
+      markTrazaBoxApkForDeletionAfterInstall(filePath);
+      // Respaldo: si el usuario no vuelve a la app, intentar borrar tras un tiempo.
+      Future.delayed(const Duration(seconds: 90), tryDeletePendingTrazaBoxApk);
 
       return true;
     } catch (e) {

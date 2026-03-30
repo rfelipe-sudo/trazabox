@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'produccion_service.dart';
 
 /// Modelo para representar las marcas de asistencia del técnico
 class MarcasTecnico {
@@ -15,12 +16,14 @@ class MarcasTecnico {
   });
 }
 
-/// Servicio para consultar las marcas de asistencia desde Supabase (GeoVictoria)
+/// Servicio para consultar las marcas de asistencia.
+/// Prioridad: rol_turno (fecha, estado); fallback: geo_marcas_diarias.
 class KrpMarcasService {
   final _supabase = Supabase.instance.client;
 
-  /// Obtener las marcas de asistencia del técnico desde Supabase
-  /// [rutTecnico] RUT del técnico (sin puntos, con/sin guión)
+  /// Obtener días trabajados y vacaciones del técnico.
+  /// Origen: rol_turno (fecha, estado). tipo_contrato: tecnicos_traza_zc.
+  /// [rutTecnico] RUT del técnico
   /// [mes] Mes a consultar (1-12)
   /// [anio] Año a consultar
   Future<MarcasTecnico> obtenerMarcas({
@@ -28,10 +31,88 @@ class KrpMarcasService {
     int? mes,
     int? anio,
   }) async {
+    final marcasRol = await _obtenerMarcasDesdeRolTurno(rutTecnico, mes, anio);
+    if (marcasRol != null) return marcasRol;
     return _obtenerMarcasDesdeSupabase(rutTecnico, mes, anio);
   }
 
-  /// Obtener marcas desde Supabase
+  /// Obtener marcas desde rol_turno (fecha, estado marca si debe estar de turno).
+  /// estado: trabajo/turno/T → trabajado; vacaciones/V → vacaciones; feriado/F → feriado; descanso/D → no laboral.
+  Future<MarcasTecnico?> _obtenerMarcasDesdeRolTurno(
+    String rutTecnico,
+    int? mes,
+    int? anio,
+  ) async {
+    try {
+      final ahora = DateTime.now();
+      final mesActual = mes ?? ahora.month;
+      final anioActual = anio ?? ahora.year;
+      final primerDia = DateTime(anioActual, mesActual, 1);
+      final ultimoDia = DateTime(anioActual, mesActual + 1, 0);
+      final fechaInicio = primerDia.toIso8601String().split('T')[0];
+      final fechaFin = ultimoDia.toIso8601String().split('T')[0];
+
+      final variantesRut = ProduccionService.rutVariantes(rutTecnico);
+      if (variantesRut.isEmpty) return null;
+
+      // rol_turno: fecha, estado (marca si debe estar de turno). Columna técnico: rut_tecnico o rut
+      dynamic response;
+      try {
+        response = await _supabase
+            .from('rol_turno')
+            .select('fecha, estado')
+            .inFilter('rut_tecnico', variantesRut)
+            .gte('fecha', fechaInicio)
+            .lte('fecha', fechaFin)
+            .order('fecha');
+      } catch (_) {
+        response = await _supabase
+            .from('rol_turno')
+            .select('fecha, estado')
+            .inFilter('rut', variantesRut)
+            .gte('fecha', fechaInicio)
+            .lte('fecha', fechaFin)
+            .order('fecha');
+      }
+
+      final filas = List<Map<String, dynamic>>.from(response as List);
+      if (filas.isEmpty) return null;
+
+      int diasTrabajados = 0;
+      int diasAusentes = 0;
+      int diasFeriados = 0;
+      int diasVacaciones = 0;
+
+      for (final row in filas) {
+        final estado = (row['estado']?.toString() ?? '').trim().toLowerCase();
+        if (estado.contains('vacacion')) {
+          diasVacaciones++;
+        } else if (estado.contains('feriado') || estado == 'f') {
+          diasFeriados++;
+        } else if (estado.contains('trabajo') || estado.contains('turno') || estado == 't') {
+          diasTrabajados++;
+        } else if (estado.contains('descanso') || estado == 'd' || estado.contains('libre')) {
+          // Día no laboral, no cuenta como trabajado ni ausente
+        } else if (estado.contains('ausente') || estado == 'a') {
+          diasAusentes++;
+        } else if (estado.isNotEmpty) {
+          diasTrabajados++;
+        }
+      }
+
+      return MarcasTecnico(
+        diasTrabajados: diasTrabajados,
+        diasAusentes: diasAusentes,
+        diasFeriados: diasFeriados,
+        diasVacaciones: diasVacaciones,
+      );
+    } catch (e) {
+      print('⚠️ [Marcas] Error rol_turno, usando geo_marcas_diarias: $e');
+      return null;
+    }
+  }
+
+  /// Obtener marcas desde Supabase (geo_marcas_diarias - fallback)
   Future<MarcasTecnico> _obtenerMarcasDesdeSupabase(
     String rutTecnico,
     int? mes,

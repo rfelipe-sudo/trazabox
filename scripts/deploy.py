@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ def load_env():
     """Load environment variables from .env file"""
     env_file = PROJECT_ROOT / ".env"
     if env_file.exists():
-        with open(env_file) as f:
+        with open(env_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -52,7 +53,7 @@ def get_supabase_config():
         # Try reading from supabase_config.dart
         config_file = PROJECT_ROOT / "lib" / "config" / "supabase_config.dart"
         if config_file.exists():
-            content = config_file.read_text()
+            content = config_file.read_text(encoding="utf-8")
             url_match = re.search(r"supabaseUrl\s*=\s*['\"]([^'\"]+)['\"]", content)
             key_match = re.search(r"supabaseAnonKey\s*=\s*['\"]([^'\"]+)['\"]", content)
             if url_match:
@@ -70,7 +71,7 @@ def get_supabase_config():
 
 def parse_pubspec_version():
     """Parse version from pubspec.yaml"""
-    content = PUBSPEC_FILE.read_text()
+    content = PUBSPEC_FILE.read_text(encoding="utf-8")
     match = re.search(r"^version:\s*(\d+\.\d+\.\d+)\+(\d+)", content, re.MULTILINE)
     if match:
         return match.group(1), int(match.group(2))
@@ -83,14 +84,14 @@ def parse_pubspec_version():
 
 def update_pubspec_version(version_name, version_code):
     """Update version in pubspec.yaml"""
-    content = PUBSPEC_FILE.read_text()
+    content = PUBSPEC_FILE.read_text(encoding="utf-8")
     new_content = re.sub(
         r"^version:\s*\d+\.\d+\.\d+(\+\d+)?",
         f"version: {version_name}+{version_code}",
         content,
         flags=re.MULTILINE
     )
-    PUBSPEC_FILE.write_text(new_content)
+    PUBSPEC_FILE.write_text(new_content, encoding="utf-8")
     print(f"Updated pubspec.yaml: {version_name}+{version_code}")
 
 
@@ -123,28 +124,34 @@ def bump_version(part="build"):
 
 
 def get_flutter_cmd():
-    """Get the flutter command (handles snap installation)"""
-    # Try regular flutter first
-    result = subprocess.run(["which", "flutter"], capture_output=True)
-    if result.returncode == 0:
-        return ["flutter"]
+    """Get the flutter executable (Windows, Linux, macOS)."""
+    found = shutil.which("flutter")
+    if found:
+        return [found]
 
-    # Try snap
-    result = subprocess.run(["which", "snap"], capture_output=True)
-    if result.returncode == 0:
-        return ["snap", "run", "flutter"]
+    if sys.platform == "win32":
+        candidates = [
+            os.path.expandvars(r"%LOCALAPPDATA%\flutter\bin\flutter.bat"),
+            os.path.expanduser(r"~\flutter\bin\flutter.bat"),
+            os.path.expanduser(r"~\Downloads\flutter_windows_3.35.6-stable\flutter\bin\flutter.bat"),
+        ]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                return [path]
+    else:
+        for path in (
+            "/snap/bin/flutter",
+            os.path.expanduser("~/flutter/bin/flutter"),
+            "/opt/flutter/bin/flutter",
+        ):
+            if os.path.isfile(path):
+                return [path]
 
-    # Fallback to common paths
-    paths = [
-        "/snap/bin/flutter",
-        os.path.expanduser("~/flutter/bin/flutter"),
-        "/opt/flutter/bin/flutter",
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            return [path]
+        snap = shutil.which("snap")
+        if snap:
+            return ["snap", "run", "flutter"]
 
-    return ["flutter"]  # Will fail with clear error if not found
+    return ["flutter"]
 
 
 def build_apk():

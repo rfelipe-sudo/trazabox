@@ -1242,6 +1242,10 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
       {int? tiempoExtra, String? mensaje}) async {
     final esAceptacion = estado == EstadoSolicitud.aceptada ||
         estado == EstadoSolicitud.aceptadaConTiempo;
+    // Si acepta y no tenemos GPS, obtenerlo antes para que el técnico vea distancia/ETA
+    if (esAceptacion && (_miLat == null || _miLng == null)) {
+      await _obtenerGpsPropio();
+    }
     final ok = await _ayudaService.responderSolicitud(
       ticketId: s.ticketId,
       estado: estado,
@@ -1258,6 +1262,9 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
     // Si aceptó, iniciar tracking de GPS para esta solicitud
     if (ok && esAceptacion) {
       _ticketsAceptadosTracking.add(s.ticketId);
+      // Actualizar GPS inmediatamente para que el técnico vea distancia/ETA
+      // (no esperar al ciclo de 45s)
+      _actualizarGpsYTracking();
     }
 
     if (mounted) {
