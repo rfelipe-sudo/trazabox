@@ -2523,7 +2523,12 @@ class ProduccionService {
           .eq('rut_o_bucket', rutTecnico)
           .inFilter('periodo', [apiCerrado, apiActual, apiSiguiente]);
 
-      final lista = List<Map<String, dynamic>>.from(response as List);
+      var lista = List<Map<String, dynamic>>.from(response as List);
+      lista = lista.where((item) {
+        final apiP = item['periodo']?.toString() ?? '';
+        final tf = _trabajoDesdeRemuneracionMmYyyy(_periodoMmYyyyDesdeApi(apiP));
+        return _filtrarReiteradosPorMesMedicion([item], tf).isNotEmpty;
+      }).toList();
       print('📊 [Calidad] Registros encontrados en calidad_api_script: ${lista.length}');
 
       // Acumular por período (reiterados y completadas desde calidad_api_script)
@@ -2535,10 +2540,13 @@ class ProduccionService {
         if (_esReiterado(item['es_reiterado'])) acum[p]!['reit'] = acum[p]!['reit']! + 1;
       }
 
-      // Total de produccion por período (mismo que Producción)
-      final prodCerrado = await _obtenerTotalProduccionMes(rutTecnico, periodoCerrado);
-      final prodActual = await _obtenerTotalProduccionMes(rutTecnico, periodoActual);
-      final prodSiguiente = await _obtenerTotalProduccionMes(rutTecnico, periodoSiguiente);
+      // Total de produccion por mes de trabajo (no mes de remuneración)
+      final trabCerrado = _trabajoDesdeRemuneracionMmYyyy(apiCerrado);
+      final trabActual = _trabajoDesdeRemuneracionMmYyyy(apiActual);
+      final trabSiguiente = _trabajoDesdeRemuneracionMmYyyy(apiSiguiente);
+      final prodCerrado = await _obtenerTotalProduccionMes(rutTecnico, trabCerrado);
+      final prodActual = await _obtenerTotalProduccionMes(rutTecnico, trabActual);
+      final prodSiguiente = await _obtenerTotalProduccionMes(rutTecnico, trabSiguiente);
 
       Map<String, dynamic>? _buildMap(String periodoInterno, String apiPeriodo, int totalProd) {
         final d = acum[apiPeriodo];
@@ -2597,28 +2605,38 @@ class ProduccionService {
   /// Así Producción y Calidad usan el mismo total para el período.
   Future<Map<String, dynamic>?> obtenerCalidadPorPeriodo(String rutTecnico, String periodo) async {
     try {
-      // periodo puede venir como "YYYY-MM" o "MM-YYYY"; normalizar a "MM-YYYY"
+      // periodo = mes de remuneración (YYYY-MM o MM-YYYY), como en calidad_api_script (Kepler).
       final periodoApi = periodo.contains('-') && periodo.split('-')[0].length == 4
           ? _convertirPeriodo(periodo)
           : periodo;
+      final remMm = _periodoMmYyyyDesdeApi(periodoApi);
+      final trabajoMm = _trabajoDesdeRemuneracionMmYyyy(remMm);
 
-      final response = await _supabase
-          .from('calidad_api_script')
-          .select('estado, es_reiterado, periodo')
-          .eq('rut_o_bucket', rutTecnico)
-          .eq('periodo', periodoApi);
+      List<Map<String, dynamic>> lista = [];
+      for (final per in {remMm, _periodoAlternativoCalidad(remMm)}) {
+        try {
+          final response = await _supabase
+              .from('calidad_api_script')
+              .select('estado, es_reiterado, periodo')
+              .eq('rut_o_bucket', rutTecnico)
+              .eq('periodo', per);
+          lista = List<Map<String, dynamic>>.from(response as List);
+          if (lista.isNotEmpty) break;
+        } catch (_) {}
+      }
 
-      final lista = List<Map<String, dynamic>>.from(response as List);
+      lista = _filtrarReiteradosPorMesMedicion(lista, trabajoMm);
       final completadasCalidad = lista.where((o) => o['estado']?.toString() == 'Completado').length;
       final reiterados = lista.where((o) => _esReiterado(o['es_reiterado'])).length;
 
-      // Total: preferir produccion (mismo que Producción); si 0, usar calidad_api_script
-      final totalProduccion = await _obtenerTotalProduccionMes(rutTecnico, periodo);
+      // Total: preferir produccion (mes de trabajo); si 0, usar calidad_api_script
+      final totalProduccion = await _obtenerTotalProduccionMes(rutTecnico, trabajoMm);
       final totalCompletadas = totalProduccion > 0 ? totalProduccion : completadasCalidad;
       if (totalCompletadas == 0 && reiterados == 0) return null;
 
       return {
-        'periodo': periodo,
+        'periodo': trabajoMm,
+        'periodo_remuneracion': remMm,
         'total_completadas': totalCompletadas,
         'total_reiterados': reiterados,
         'porcentaje_reiteracion': totalCompletadas > 0 ? (reiterados / totalCompletadas) * 100.0 : 0.0,
@@ -2652,33 +2670,138 @@ class ProduccionService {
     return '';
   }
 
-  /// Obtener detalle de reiterados desde calidad_api_script (es_reiterado = true)
+  static String _periodoMmYyyyDesdeApi(String periodoApi) {
+    final p = periodoApi.split('-');
+    if (p.length != 2) return periodoApi;
+    if (p[0].length == 4) return '${p[1]}-${p[0]}';
+    return periodoApi;
+  }
+
+  static (int mes, int anio) _mesAnioMedicionMmYyyy(String mmYyyy) {
+    final p = mmYyyy.split('-');
+    if (p.length != 2) return (0, 0);
+    return (int.tryParse(p[0]) ?? 0, int.tryParse(p[1]) ?? 0);
+  }
+
+  static String _periodoAlternativoCalidad(String periodoMmYyyy) {
+    final p = periodoMmYyyy.split('-');
+    if (p.length != 2) return periodoMmYyyy;
+    if (p[0].length == 4) return '${p[1]}-${p[0]}';
+    return '${p[1]}-${p[0]}';
+  }
+
+  /// Mes de trabajo MM-YYYY a partir del período de remuneración en calidad_api_script.
+  static String _trabajoDesdeRemuneracionMmYyyy(String remMmYyyy) {
+    final mm = _periodoMmYyyyDesdeApi(remMmYyyy);
+    final (m, y) = _mesAnioMedicionMmYyyy(mm);
+    if (m < 1 || m > 12 || y < 2000) return mm;
+    final t = DateTime(y, m - 1, 1);
+    return '${t.month.toString().padLeft(2, '0')}-${t.year}';
+  }
+
+  /// Período de remuneración MM-YYYY a partir del mes de trabajo medido.
+  static String _remuneracionDesdeTrabajoMmYyyy(String trabMmYyyy) {
+    final mm = _periodoMmYyyyDesdeApi(trabMmYyyy);
+    final (m, y) = _mesAnioMedicionMmYyyy(mm);
+    if (m < 1 || m > 12 || y < 2000) return mm;
+    final t = DateTime(y, m + 1, 1);
+    return '${t.month.toString().padLeft(2, '0')}-${t.year}';
+  }
+
+  DateTime? _fechaTrabajoDesdeFilaCalidadScript(Map<String, dynamic> o) {
+    for (final key in [
+      'fecha',
+      'fecha_original',
+      'fecha_trabajo',
+      'fecha_de_trabajo',
+    ]) {
+      final s = o[key]?.toString().trim();
+      if (s == null || s.isEmpty) continue;
+      final parts = _partirFecha(s);
+      if (parts == null) continue;
+      final d = int.tryParse(parts[0]) ?? 0;
+      final m = int.tryParse(parts[1]) ?? 0;
+      var y = int.tryParse(parts[2]) ?? 0;
+      if (y < 100) y += 2000;
+      try {
+        if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 2000) {
+          return DateTime(y, m, d);
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Quita reiterados cuya fecha de trabajo no coincide con el mes de medición (p. ej. enero colgando en periodo "02-YYYY").
+  List<Map<String, dynamic>> _filtrarReiteradosPorMesMedicion(
+    List<Map<String, dynamic>> lista,
+    String periodoMmYyyy,
+  ) {
+    final (mEsp, yEsp) = _mesAnioMedicionMmYyyy(periodoMmYyyy);
+    if (mEsp < 1 || mEsp > 12 || yEsp < 2000) return lista;
+    return lista.where((o) {
+      final dt = _fechaTrabajoDesdeFilaCalidadScript(o);
+      if (dt == null) return true;
+      return dt.month == mEsp && dt.year == yEsp;
+    }).toList();
+  }
+
+  /// Obtener detalle de reiterados desde calidad_api_script (es_reiterado = true).
+  /// [periodo] = mes de **trabajo** MM-YYYY (o YYYY-MM); la API se consulta por remuneración Kepler.
   Future<List<Map<String, dynamic>>> obtenerDetalleReiteradosPorPeriodo(
     String rutTecnico,
     String periodo,
   ) async {
     try {
-      // periodo puede venir como "YYYY-MM" o "MM-YYYY"
       final periodoApi = periodo.contains('-') && periodo.split('-')[0].length == 4
           ? _convertirPeriodo(periodo)
           : periodo;
 
-      print('📋 [Detalle] calidad_api_script RUT=$rutTecnico periodo=$periodoApi');
+      final variantes = rutVariantes(rutTecnico);
+      if (variantes.isEmpty) return [];
 
-      // Traer todas las órdenes del periodo; filtrar reiterados en cliente
-      // (es_reiterado puede ser boolean true o string "SI" según fuente de datos)
-      final response = await _supabase
-          .from('calidad_api_script')
-          .select()
-          .eq('rut_o_bucket', rutTecnico)
-          .eq('periodo', periodoApi)
-          .order('fecha', ascending: false);
+      final trabajoMmYyyy = _periodoMmYyyyDesdeApi(periodoApi);
+      final remMmYyyy = _remuneracionDesdeTrabajoMmYyyy(trabajoMmYyyy);
+      final cands = <String>[];
+      final seen = <String>{};
+      for (final p in [
+        remMmYyyy,
+        _periodoAlternativoCalidad(remMmYyyy),
+        trabajoMmYyyy,
+        _periodoAlternativoCalidad(trabajoMmYyyy),
+      ]) {
+        if (seen.add(p)) cands.add(p);
+      }
 
-      final lista = (List<Map<String, dynamic>>.from(response as List))
-          .where((o) => _esReiterado(o['es_reiterado']))
-          .toList();
-      print('📋 [Detalle] ✅ ${lista.length} reiterados encontrados');
-      return lista;
+      print(
+          '📋 [Detalle] calidad_api_script variantes=$variantes trabajo=$trabajoMmYyyy rem=$remMmYyyy cands=$cands');
+
+      for (final per in cands) {
+        try {
+          final response = await _supabase
+              .from('calidad_api_script')
+              .select()
+              .inFilter('rut_o_bucket', variantes)
+              .eq('periodo', per)
+              .order('fecha', ascending: false)
+              .limit(3000);
+
+          final lista = (List<Map<String, dynamic>>.from(response as List))
+              .where((o) => _esReiterado(o['es_reiterado']))
+              .toList();
+          if (lista.isNotEmpty) {
+            final filtrada = _filtrarReiteradosPorMesMedicion(lista, trabajoMmYyyy);
+            print(
+                '📋 [Detalle] ✅ ${filtrada.length} reiterados tras filtro mes (periodo=$per, era ${lista.length})');
+            return filtrada;
+          }
+        } catch (e) {
+          print('⚠️ [Detalle] periodo $per: $e');
+        }
+      }
+
+      print('📋 [Detalle] sin reiterados en trabajo $trabajoMmYyyy');
+      return [];
     } catch (e) {
       print('❌ [Calidad] Error obteniendo detalle de reiterados: $e');
       return [];
@@ -2767,24 +2890,45 @@ class ProduccionService {
     return fecha;
   }
 
-  /// Obtener ranking de calidad para un período desde calidad_api_script
+  /// Obtener ranking de calidad para un período desde calidad_api_script.
+  /// [periodo] preferentemente MM-YYYY de **remuneración**; si no hay filas, prueba mes de trabajo legacy.
   Future<Map<String, dynamic>> obtenerRankingCalidad(String periodo) async {
     try {
       final periodoApi = periodo.contains('-') && periodo.split('-')[0].length == 4
           ? _convertirPeriodo(periodo)
           : periodo;
-      print('🏆 [Calidad] Ranking para período: $periodoApi');
+      final remMm = _periodoMmYyyyDesdeApi(periodoApi);
+      final trabajoMm = _trabajoDesdeRemuneracionMmYyyy(remMm);
+      final cands = <String>[];
+      final seen = <String>{};
+      for (final p in [
+        remMm,
+        _periodoAlternativoCalidad(remMm),
+        trabajoMm,
+        _periodoAlternativoCalidad(trabajoMm),
+      ]) {
+        if (seen.add(p)) cands.add(p);
+      }
 
-      // Obtener completadas del período
-      final responseComp = await _supabase
-          .from('calidad_api_script')
-          .select('rut_o_bucket, tecnico, es_reiterado')
-          .eq('periodo', periodoApi)
-          .eq('estado', 'Completado')
-          .limit(10000);
-
-      final listaComp = List<Map<String, dynamic>>.from(responseComp as List);
-      print('🏆 [Calidad] Completadas para ranking: ${listaComp.length} (periodo=$periodoApi)');
+      List<Map<String, dynamic>> listaComp = [];
+      String? perUsado;
+      for (final per in cands) {
+        try {
+          final responseComp = await _supabase
+              .from('calidad_api_script')
+              .select('rut_o_bucket, tecnico, es_reiterado')
+              .eq('periodo', per)
+              .eq('estado', 'Completado')
+              .limit(10000);
+          final list = List<Map<String, dynamic>>.from(responseComp as List);
+          if (list.isNotEmpty) {
+            listaComp = list;
+            perUsado = per;
+            break;
+          }
+        } catch (_) {}
+      }
+      print('🏆 [Calidad] Ranking período usado: $perUsado rem=$remMm completadas=${listaComp.length}');
 
       // Agrupar por técnico contando completadas y reiterados
       final Map<String, Map<String, dynamic>> porTecnico = {};

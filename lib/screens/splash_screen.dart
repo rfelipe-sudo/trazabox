@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:trazabox/services/update_service.dart';
+import 'package:trazabox/widgets/update_dialog.dart';
 
 // ─── Paleta ──────────────────────────────────────────────────────────────────
 const _bg     = Color(0xFF050810);
@@ -53,9 +54,13 @@ class _SplashScreenState extends State<SplashScreen>
 
   bool _navegado = false;
 
+  /// Consulta GitHub en paralelo al splash.
+  late Future<UpdateCheckResult> _updateCheckFuture;
+
   @override
   void initState() {
     super.initState();
+    _updateCheckFuture = UpdateService().checkForUpdate();
 
     // Aurora
     _aurora = AnimationController(vsync: this, duration: const Duration(seconds: 12))
@@ -113,28 +118,82 @@ class _SplashScreenState extends State<SplashScreen>
     });
   }
 
-  void _navegar() async {
+  Future<void> _navegar() async {
     if (!mounted) return;
 
-    // Verificar actualizaciones antes de navegar
-    try {
-      final updateService = UpdateService();
-      final updateInfo = await updateService.checkForUpdate();
+    final puedeEntrar = await _runUpdateGate();
 
-      if (updateInfo != null && mounted) {
-        // Hay actualización disponible, mostrar diálogo
-        final shouldUpdate = await showUpdateDialog(context, updateInfo);
-        // Si el usuario actualiza, la app se cerrará para instalar
-        // Si dice "después", continuamos normalmente
-      }
-    } catch (e) {
-      print('⚠️ Error verificando actualizaciones: $e');
-      // Continuar aunque falle la verificación
+    if (!mounted) return;
+    if (puedeEntrar) {
+      Navigator.of(context).pushReplacementNamed('/home');
     }
+  }
 
-    if (!mounted) return;
+  /// `true` si puede continuar a la app principal (al día o flujo de actualización completado).
+  Future<bool> _runUpdateGate() async {
+    var result = await _updateCheckFuture;
+    if (!mounted) return false;
 
-    Navigator.of(context).pushReplacementNamed('/home');
+    while (mounted) {
+      if (result is UpdateCheckUpToDate) {
+        return true;
+      }
+
+      if (result is UpdateCheckAvailable) {
+        // Variable local: dentro del `builder` no aplica la promoción de tipo de `result`.
+        final available = result;
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => UpdateRequiredDialog(
+            displayVersion: available.displayVersion,
+            downloadUrl: available.downloadUrl,
+          ),
+        );
+        if (!mounted) return false;
+        return true;
+      }
+
+      final titulo = result is UpdateCheckNoConnection
+          ? 'Sin conexión'
+          : 'No se pudo verificar';
+      final mensaje = result is UpdateCheckNoConnection
+          ? 'Comprueba tu conexión a internet e intenta de nuevo.'
+          : (result as UpdateCheckError).message;
+
+      final reintentar = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF0A1628),
+            title: Text(
+              titulo,
+              style: const TextStyle(color: Colors.white),
+            ),
+            content: Text(
+              mensaje,
+              style: const TextStyle(color: Color(0xFF8FA8C8)),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (reintentar != true || !mounted) {
+        return false;
+      }
+
+      _updateCheckFuture = UpdateService().checkForUpdate();
+      result = await _updateCheckFuture;
+    }
+    return false;
   }
 
   @override

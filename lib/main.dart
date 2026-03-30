@@ -33,7 +33,6 @@ import 'package:trazabox/services/kepler_polling_service.dart';
 import 'package:trazabox/services/notificacion_service.dart';
 import 'package:trazabox/services/alarm_audio_service.dart';
 import 'package:trazabox/services/notification_service.dart' as notification_service;
-import 'package:trazabox/services/update_service.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -282,33 +281,8 @@ void _configurarListenerAlertasAutomaticas() {
   print('✅ Listeners de alertas configurados (no_se_bajo, fuera_de_rango, en_movimiento)');
 }
 
-class AgenteDesconexionesApp extends StatefulWidget {
+class AgenteDesconexionesApp extends StatelessWidget {
   const AgenteDesconexionesApp({super.key});
-
-  @override
-  State<AgenteDesconexionesApp> createState() => _AgenteDesconexionesAppState();
-}
-
-class _AgenteDesconexionesAppState extends State<AgenteDesconexionesApp>
-    with WidgetsBindingObserver {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      UpdateService.tryDeletePendingTrazaBoxApk();
-    }
-  }
 
   @override
   Widget build(BuildContext context) {

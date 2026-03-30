@@ -1,380 +1,281 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+
 import 'package:dio/dio.dart';
-import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:open_file/open_file.dart';
-import 'package:trazabox/config/supabase_config.dart';
 
-/// Servicio para verificar e instalar actualizaciones desde Supabase Storage
-class UpdateService {
-  // Supabase bucket para actualizaciones (debe ser público)
-  static const String _bucketName = 'app-updates';
-  static const String _versionFile = 'version.json';
-  static const String _apkFile = 'trazabox.apk';
+/// URL de la última release (API pública GitHub).
+const String kGitHubLatestReleaseUrl =
+    'https://api.github.com/repos/rfelipe-sudo/trazabox/releases/latest';
 
-  /// Solo este nombre se borra tras instalar (no otros APK del dispositivo).
-  static const String localUpdateApkFileName = 'trazabox_update.apk';
+const String kGitHubApkAssetName = 'app-release.apk';
 
-  static String? _apkPathPendingDeletion;
+const String kUpdateApkFileName = 'update.apk';
 
-  final Dio _dio = Dio();
+// ─── Resultado de checkForUpdate ───────────────────────────────────────────
 
-  /// Marca el APK descargado para borrarlo al volver a la app tras el instalador.
-  static void markTrazaBoxApkForDeletionAfterInstall(String filePath) {
-    if (!filePath.endsWith(localUpdateApkFileName)) return;
-    _apkPathPendingDeletion = filePath;
-  }
+sealed class UpdateCheckResult {
+  const UpdateCheckResult();
+}
 
-  /// Borra el APK de actualización TrazaBox si estaba pendiente (p. ej. al reanudar la app).
-  static Future<void> tryDeletePendingTrazaBoxApk() async {
-    final p = _apkPathPendingDeletion;
-    if (p == null) return;
+/// No hay actualización o la remota no es mayor que la instalada.
+class UpdateCheckUpToDate extends UpdateCheckResult {
+  const UpdateCheckUpToDate();
+}
+
+/// Hay una versión más nueva en GitHub.
+class UpdateCheckAvailable extends UpdateCheckResult {
+  final String remoteTag;
+  final String displayVersion;
+  final String downloadUrl;
+
+  const UpdateCheckAvailable({
+    required this.remoteTag,
+    required this.displayVersion,
+    required this.downloadUrl,
+  });
+}
+
+/// Sin red / timeout / host unreachable.
+class UpdateCheckNoConnection extends UpdateCheckResult {
+  final Object? cause;
+
+  const UpdateCheckNoConnection([this.cause]);
+}
+
+/// Respuesta inválida o asset APK no encontrado.
+class UpdateCheckError extends UpdateCheckResult {
+  final String message;
+
+  const UpdateCheckError(this.message);
+}
+
+/// Borra el APK en segundo plano: 3s, luego +5s, +10s, +30s entre intentos; no bloquea la UI.
+void _scheduleDeleteUpdateApk(File file) {
+  unawaited(_deleteUpdateApkWithRetries(file));
+}
+
+Future<void> _deleteUpdateApkWithRetries(File file) async {
+  const delays = <Duration>[
+    Duration(seconds: 3),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+  ];
+  for (final d in delays) {
+    await Future<void>.delayed(d);
     try {
-      final f = File(p);
-      if (await f.exists()) {
-        await f.delete();
-        print('🗑️ [UpdateService] APK TrazaBox eliminado: $p');
+      if (await file.exists()) {
+        await file.delete();
       }
-      _apkPathPendingDeletion = null;
-    } catch (e) {
-      print('⚠️ [UpdateService] No se pudo eliminar el APK: $e');
-    }
+      if (!await file.exists()) return;
+    } catch (_) {}
+  }
+}
+
+/// Servicio de actualización desde GitHub Releases.
+class UpdateService {
+  UpdateService({Dio? dio}) : _dio = dio ?? Dio();
+
+  final Dio _dio;
+
+  /// Quita prefijo `v`/`V` y compara semver (major.minor.patch).
+  /// Retorna `true` si [remoteTag] es **estrictamente mayor** que [currentVersion].
+  static bool isRemoteNewerThanCurrent(String remoteTag, String currentVersion) {
+    return compareSemver(remoteTag, currentVersion) > 0;
   }
 
-  /// Verifica si hay una actualización disponible
-  Future<UpdateInfo?> checkForUpdate() async {
+  /// < 0 si a < b, 0 si igual, > 0 si a > b.
+  static int compareSemver(String a, String b) {
+    final pa = _parseSemverParts(a);
+    final pb = _parseSemverParts(b);
+    for (var i = 0; i < 3; i++) {
+      final c = pa[i].compareTo(pb[i]);
+      if (c != 0) return c;
+    }
+    return 0;
+  }
+
+  static List<int> _parseSemverParts(String raw) {
+    var s = raw.trim();
+    if (s.startsWith('v') || s.startsWith('V')) {
+      s = s.substring(1);
+    }
+    final parts = s.split('.');
+    int p(int i) {
+      if (i >= parts.length) return 0;
+      final seg = parts[i];
+      final match = RegExp(r'^(\d+)').firstMatch(seg);
+      return int.tryParse(match?.group(1) ?? '') ?? 0;
+    }
+
+    return [p(0), p(1), p(2)];
+  }
+
+  /// Consulta GitHub y compara con [PackageInfo.version] (sin build).
+  Future<UpdateCheckResult> checkForUpdate() async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();
-      final currentVersionCode = int.tryParse(packageInfo.buildNumber) ?? 1;
+      final current = packageInfo.version.trim();
 
-      print('📦 Versión actual: ${packageInfo.version}+$currentVersionCode');
-
-      // Obtener archivo de versión desde Supabase Storage
-      final versionUrl = '${SupabaseConfig.supabaseUrl}/storage/v1/object/public/$_bucketName/$_versionFile';
-
-      final response = await _dio.get(versionUrl);
+      final uri = Uri.parse(kGitHubLatestReleaseUrl);
+      final response = await http
+          .get(
+            uri,
+            headers: const {
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'TrazaBox-Flutter-Update',
+            },
+          )
+          .timeout(const Duration(seconds: 20));
 
       if (response.statusCode != 200) {
-        print('⚠️ Error obteniendo versión: ${response.statusCode}');
-        return null;
-      }
-
-      final data = response.data;
-      final latestVersionCode = data['versionCode'] as int? ?? 0;
-      final versionName = data['versionName'] as String? ?? 'Unknown';
-      final releaseNotes = data['releaseNotes'] as String? ?? 'Nueva versión disponible';
-      final fileSize = data['fileSize'] as int? ?? 0;
-
-      print('🔄 Última versión en Supabase: $versionName (code: $latestVersionCode)');
-
-      if (latestVersionCode > currentVersionCode) {
-        final downloadUrl = '${SupabaseConfig.supabaseUrl}/storage/v1/object/public/$_bucketName/$_apkFile';
-
-        return UpdateInfo(
-          versionName: versionName,
-          versionCode: latestVersionCode,
-          downloadUrl: downloadUrl,
-          releaseNotes: releaseNotes,
-          fileSize: fileSize,
+        return UpdateCheckError(
+          'GitHub respondió ${response.statusCode}',
         );
       }
 
-      print('✅ App actualizada');
-      return null;
+      final dynamic data;
+      try {
+        data = jsonDecode(response.body);
+      } on FormatException catch (e) {
+        return UpdateCheckError('JSON inválido: $e');
+      }
+      if (data is! Map<String, dynamic>) {
+        return const UpdateCheckError('Respuesta JSON inválida');
+      }
+
+      final tagName = data['tag_name']?.toString().trim();
+      if (tagName == null || tagName.isEmpty) {
+        return const UpdateCheckError('Release sin tag_name');
+      }
+
+      String? downloadUrl;
+      final assets = data['assets'];
+      if (assets is List) {
+        for (final item in assets) {
+          if (item is Map<String, dynamic> &&
+              item['name']?.toString() == kGitHubApkAssetName) {
+            downloadUrl = item['browser_download_url']?.toString();
+            break;
+          }
+        }
+      }
+
+      if (downloadUrl == null || downloadUrl.isEmpty) {
+        return UpdateCheckError(
+          'No se encontró el asset "$kGitHubApkAssetName" en la release',
+        );
+      }
+
+      if (!isRemoteNewerThanCurrent(tagName, current)) {
+        return const UpdateCheckUpToDate();
+      }
+
+      return UpdateCheckAvailable(
+        remoteTag: tagName,
+        displayVersion: tagName,
+        downloadUrl: downloadUrl,
+      );
+    } on SocketException catch (e) {
+      return UpdateCheckNoConnection(e);
+    } on http.ClientException catch (e) {
+      return UpdateCheckNoConnection(e);
+    } on HttpException catch (e) {
+      return UpdateCheckNoConnection(e);
+    } on HandshakeException catch (e) {
+      return UpdateCheckNoConnection(e);
+    } on TlsException catch (e) {
+      return UpdateCheckNoConnection(e);
+    } on TimeoutException catch (e) {
+      return UpdateCheckNoConnection(e);
     } catch (e) {
-      print('❌ Error verificando actualizaciones: $e');
-      return null;
+      return UpdateCheckError(e.toString());
     }
   }
 
-  /// Descarga el APK y retorna la ruta del archivo
-  Future<String?> downloadApk(String url, Function(double progress)? onProgress) async {
+  /// Descarga [url] a [getTemporaryDirectory]/[kUpdateApkFileName], abre el instalador y borra el APK.
+  ///
+  /// [onProgress]: 0.0–1.0 durante la descarga; al terminar la descarga se emite 1.0 antes de abrir el instalador.
+  /// [onInstalling]: se invoca justo antes de abrir el instalador del sistema.
+  Future<void> downloadAndInstall(
+    String url,
+    void Function(double progress) onProgress, {
+    void Function()? onInstalling,
+  }) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError(
+        'La instalación automática solo está soportada en Android',
+      );
+    }
+
     try {
-      final dir = await getExternalStorageDirectory();
-      if (dir == null) {
-        print('❌ No se pudo obtener directorio de almacenamiento');
-        return null;
+      final status = await Permission.requestInstallPackages.request();
+      if (!status.isGranted) {
+        throw StateError(
+          'Se necesita permiso para instalar actualizaciones. '
+          'Actívalo en Ajustes de la aplicación.',
+        );
       }
 
-      final filePath = '${dir.path}/$localUpdateApkFileName';
+      final dir = await getTemporaryDirectory();
+      final filePath = '${dir.path}/$kUpdateApkFileName';
       final file = File(filePath);
 
-      // Eliminar archivo anterior si existe
       if (await file.exists()) {
         await file.delete();
       }
 
-      print('⬇️ Descargando APK desde: $url');
+      onProgress(0);
 
       await _dio.download(
         url,
         filePath,
         onReceiveProgress: (received, total) {
-          if (total > 0 && onProgress != null) {
-            onProgress(received / total);
+          if (total > 0) {
+            onProgress((received / total).clamp(0.0, 1.0));
+          } else if (received > 0) {
+            onProgress(0);
           }
         },
+        options: Options(
+          headers: const {
+            'Accept': 'application/octet-stream',
+            'User-Agent': 'TrazaBox-Flutter-Update',
+          },
+          followRedirects: true,
+          validateStatus: (s) => s != null && s >= 200 && s < 300,
+        ),
       );
 
-      print('✅ APK descargado: $filePath');
-      return filePath;
-    } catch (e) {
-      print('❌ Error descargando APK: $e');
-      return null;
-    }
-  }
+      onProgress(1);
+      onInstalling?.call();
 
-  /// Instala el APK
-  Future<bool> installApk(String filePath) async {
-    try {
-      // Verificar permiso de instalación
-      if (Platform.isAndroid) {
-        final status = await Permission.requestInstallPackages.request();
-        if (!status.isGranted) {
-          print('❌ Permiso de instalación denegado');
-          return false;
-        }
-      }
-
-      print('📦 Instalando APK: $filePath');
-      final result = await OpenFile.open(filePath);
+      final result = await OpenFile.open(
+        filePath,
+        type: 'application/vnd.android.package-archive',
+      );
 
       if (result.type != ResultType.done) {
-        print('❌ Error abriendo APK: ${result.message}');
-        return false;
+        throw StateError(
+          result.message.isNotEmpty
+              ? result.message
+              : 'No se pudo abrir el instalador',
+        );
       }
 
-      markTrazaBoxApkForDeletionAfterInstall(filePath);
-      // Respaldo: si el usuario no vuelve a la app, intentar borrar tras un tiempo.
-      Future.delayed(const Duration(seconds: 90), tryDeletePendingTrazaBoxApk);
-
-      return true;
-    } catch (e) {
-      print('❌ Error instalando APK: $e');
-      return false;
+      _scheduleDeleteUpdateApk(file);
+    } on DioException catch (e) {
+      final msg = e.type == DioExceptionType.connectionError ||
+              e.type == DioExceptionType.connectionTimeout
+          ? 'Sin conexión o tiempo de espera agotado al descargar.'
+          : 'Error al descargar: ${e.message ?? e.toString()}';
+      throw StateError(msg);
     }
   }
-}
-
-/// Información de una actualización disponible
-class UpdateInfo {
-  final String versionName;
-  final int versionCode;
-  final String downloadUrl;
-  final String releaseNotes;
-  final int fileSize;
-
-  UpdateInfo({
-    required this.versionName,
-    required this.versionCode,
-    required this.downloadUrl,
-    required this.releaseNotes,
-    required this.fileSize,
-  });
-
-  String get fileSizeFormatted {
-    if (fileSize < 1024) return '$fileSize B';
-    if (fileSize < 1024 * 1024) return '${(fileSize / 1024).toStringAsFixed(1)} KB';
-    return '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-}
-
-/// Widget de diálogo para mostrar actualización disponible
-class UpdateDialog extends StatefulWidget {
-  final UpdateInfo updateInfo;
-  final UpdateService updateService;
-
-  const UpdateDialog({
-    super.key,
-    required this.updateInfo,
-    required this.updateService,
-  });
-
-  @override
-  State<UpdateDialog> createState() => _UpdateDialogState();
-}
-
-class _UpdateDialogState extends State<UpdateDialog> {
-  bool _isDownloading = false;
-  double _progress = 0;
-  String? _error;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: const Color(0xFF0A1628),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: Color(0xFF00D9FF), width: 1),
-      ),
-      title: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF00D9FF).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(
-              Icons.system_update,
-              color: Color(0xFF00D9FF),
-            ),
-          ),
-          const SizedBox(width: 12),
-          const Text(
-            'Actualización disponible',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Nueva versión: ${widget.updateInfo.versionName}',
-            style: const TextStyle(
-              color: Color(0xFF00D9FF),
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Tamaño: ${widget.updateInfo.fileSizeFormatted}',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.7),
-              fontSize: 14,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              widget.updateInfo.releaseNotes,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.8),
-                fontSize: 13,
-              ),
-              maxLines: 5,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (_isDownloading) ...[
-            const SizedBox(height: 16),
-            LinearProgressIndicator(
-              value: _progress,
-              backgroundColor: Colors.white.withOpacity(0.1),
-              valueColor: const AlwaysStoppedAnimation(Color(0xFF00D9FF)),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Descargando... ${(_progress * 100).toStringAsFixed(0)}%',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.7),
-                fontSize: 12,
-              ),
-            ),
-          ],
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              _error!,
-              style: const TextStyle(
-                color: Color(0xFFFF6B35),
-                fontSize: 12,
-              ),
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        if (!_isDownloading)
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(
-              'Después',
-              style: TextStyle(color: Colors.white.withOpacity(0.6)),
-            ),
-          ),
-        if (!_isDownloading)
-          ElevatedButton(
-            onPressed: _downloadAndInstall,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00D9FF),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            child: const Text('Actualizar ahora'),
-          ),
-      ],
-    );
-  }
-
-  Future<void> _downloadAndInstall() async {
-    setState(() {
-      _isDownloading = true;
-      _error = null;
-    });
-
-    try {
-      final filePath = await widget.updateService.downloadApk(
-        widget.updateInfo.downloadUrl,
-        (progress) {
-          setState(() => _progress = progress);
-        },
-      );
-
-      if (filePath == null) {
-        setState(() {
-          _isDownloading = false;
-          _error = 'Error al descargar la actualización';
-        });
-        return;
-      }
-
-      final installed = await widget.updateService.installApk(filePath);
-      if (!installed) {
-        setState(() {
-          _isDownloading = false;
-          _error = 'Error al instalar la actualización';
-        });
-        return;
-      }
-
-      // Si llegamos aquí, la instalación inició
-      if (mounted) {
-        Navigator.of(context).pop(true);
-      }
-    } catch (e) {
-      setState(() {
-        _isDownloading = false;
-        _error = 'Error: $e';
-      });
-    }
-  }
-}
-
-/// Función helper para mostrar el diálogo de actualización
-Future<bool?> showUpdateDialog(BuildContext context, UpdateInfo updateInfo) {
-  return showDialog<bool>(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => UpdateDialog(
-      updateInfo: updateInfo,
-      updateService: UpdateService(),
-    ),
-  );
 }

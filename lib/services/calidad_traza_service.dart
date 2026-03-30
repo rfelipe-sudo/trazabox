@@ -4,13 +4,14 @@ import 'produccion_service.dart';
 /// Servicio de calidad para TrazaBox.
 /// Fuente de datos: tabla `calidad_api_script` en Supabase.
 ///
-/// Lógica de períodos:
-///   - El campo `periodo` en BD = MES DE TRABAJO (actividades medidas)
-///   - BONO del mes M = mide trabajo del mes M-1
-///   - Ej: BONO MAR (marzo) → periodo "02-2026" (trabajo febrero)
-///   - Ej: BONO ABR (abril) → periodo "03-2026" (trabajo marzo)
+/// Lógica de períodos (Kepler / dashboard):
+///   - El campo `periodo` en `calidad_api_script` = MES DE REMUNERACIÓN / liquidación
+///   - BONO MAR (marzo) → `periodo` "03-YYYY" (trabajo medido: febrero)
+///   - Los getters [getPeriodoMidiendo] / [getPeriodoProximo] devuelven ese MM-YYYY de remuneración
+///   para consultar la API. Los mapas de calidad exponen `periodo` = mes de trabajo y
+///   `periodo_remuneracion` para ranking y consultas a la misma tabla.
 ///
-/// Formato del campo `periodo` en BD: "MM-YYYY" = mes de trabajo
+/// Formato: "MM-YYYY" (también se prueba "YYYY-MM" como alternativa).
 class CalidadTrazaService {
   static final CalidadTrazaService _instance = CalidadTrazaService._internal();
   factory CalidadTrazaService() => _instance;
@@ -35,27 +36,53 @@ class CalidadTrazaService {
   String _formatPeriodo(int mes, int anno) =>
       '${mes.toString().padLeft(2, '0')}-$anno';
 
-  /// Período CERRADO: mes de trabajo del bono ya cerrado.
-  /// Hoy 6 MAR → BONO FEB cerrado → trabajo enero → "01-2026"
+  /// Período CERRADO: mes de **remuneración** del bono ya liquidado (mes calendario anterior).
+  /// Hoy 6 MAR → "02-YYYY" (BONO FEB en BD).
   String getPeriodoCerrado() {
     final now = DateTime.now();
-    final trabajoCerrado = DateTime(now.year, now.month - 2, 1);
-    return _formatPeriodo(trabajoCerrado.month, trabajoCerrado.year);
+    final rem = DateTime(now.year, now.month - 1, 1);
+    return _formatPeriodo(rem.month, rem.year);
   }
 
-  /// Período MIDIENDO: mes de trabajo del bono en curso.
-  /// Hoy 6 MAR → BONO MAR midiendo → trabajo febrero → "02-2026"
+  /// Período MIDIENDO: mes de **remuneración** del bono en medición (mes calendario actual).
+  /// Hoy 6 MAR → "03-YYYY" (BONO MAR en calidad_api_script; trabajo febrero).
   String getPeriodoMidiendo() {
     final now = DateTime.now();
-    final trabajoActual = DateTime(now.year, now.month - 1, 1);
-    return _formatPeriodo(trabajoActual.month, trabajoActual.year);
+    return _formatPeriodo(now.month, now.year);
   }
 
-  /// Período PRÓXIMO: mes de trabajo del próximo bono.
-  /// Hoy 6 MAR → BONO ABR próximo → trabajo marzo → "03-2026"
+  /// Período PRÓXIMO: mes de remuneración del bono siguiente.
+  /// Hoy 6 MAR → "04-YYYY" (BONO ABR).
   String getPeriodoProximo() {
     final now = DateTime.now();
-    return _formatPeriodo(now.month, now.year);
+    final t = DateTime(now.year, now.month + 1, 1);
+    return _formatPeriodo(t.month, t.year);
+  }
+
+  /// Mes de remuneración del bono posterior al próximo (tercera columna en detalle).
+  /// Hoy 6 MAR → "05-YYYY" (BONO MAY).
+  String getPeriodoPosterior() {
+    final now = DateTime.now();
+    final t = DateTime(now.year, now.month + 2, 1);
+    return _formatPeriodo(t.month, t.year);
+  }
+
+  /// Mes de trabajo (MM-YYYY) asociado al período de remuneración de Kepler en BD.
+  String periodoTrabajoDesdeRemuneracion(String periodoRemuneracion) {
+    final canon = _periodoCanonicoMmYyyy(periodoRemuneracion);
+    final (m, y) = _mesAnnoPeriodo(canon);
+    if (m < 1 || m > 12 || y < 2000) return canon;
+    final t = DateTime(y, m - 1, 1);
+    return _formatPeriodo(t.month, t.year);
+  }
+
+  /// Período en calidad_api_script (remuneración) a partir del mes de trabajo.
+  String periodoRemuneracionDesdeTrabajo(String periodoTrabajo) {
+    final canon = _periodoCanonicoMmYyyy(periodoTrabajo);
+    final (m, y) = _mesAnnoPeriodo(canon);
+    if (m < 1 || m > 12 || y < 2000) return canon;
+    final t = DateTime(y, m + 1, 1);
+    return _formatPeriodo(t.month, t.year);
   }
 
   // ── Consulta principal ────────────────────────────────────────────────────
@@ -65,15 +92,18 @@ class CalidadTrazaService {
   /// total_reiterados = desde calidad_api_script
   Future<Map<String, dynamic>?> obtenerCalidadPorPeriodo(
     String rut,
-    String periodo,
+    String periodoRemuneracion,
   ) async {
     try {
       final variantes = _rutVariantesCalidad(rut);
       if (variantes.isEmpty) return null;
 
-      // 1. Reiterados y detalle — rut_o_bucket puede diferir del RUT guardado en prefs
+      final periodoRem = _periodoCanonicoMmYyyy(periodoRemuneracion);
+      final periodoTrabajo = periodoTrabajoDesdeRemuneracion(periodoRem);
+
+      // 1. Reiterados y detalle — `periodo` en BD = remuneración (Kepler)
       List<Map<String, dynamic>> ordenes = [];
-      for (final per in {periodo, _periodoAlternativo(periodo)}) {
+      for (final per in {periodoRem, _periodoAlternativo(periodoRem)}) {
         try {
           final response = await _supabase
               .from('calidad_api_script')
@@ -85,13 +115,15 @@ class CalidadTrazaService {
           if (ordenes.isNotEmpty) break;
         } catch (_) {}
       }
+      // Filtrar por mes/año de la fecha de trabajo (no por remuneración en BD).
+      ordenes = _filtrarFilasMesMedicion(ordenes, periodoTrabajo);
       final completadasCalidad = ordenes
           .where((o) => o['estado']?.toString() == 'Completado')
           .length;
       final reiteradosValidos = ordenes.where((o) => _esReiterado(o['es_reiterado'])).toList();
 
       // Total: SIEMPRE preferir produccion (mismo que Producción); si 0, usar calidad_api_script
-      final totalProduccion = await _obtenerTotalProduccionMes(rut, periodo);
+      final totalProduccion = await _obtenerTotalProduccionMes(rut, periodoTrabajo);
       final totalCompletadas = totalProduccion > 0 ? totalProduccion : completadasCalidad;
       if (totalCompletadas == 0) return null;
 
@@ -115,7 +147,8 @@ class CalidadTrazaService {
       }
 
       return {
-        'periodo': periodo,
+        'periodo': periodoTrabajo,
+        'periodo_remuneracion': periodoRem,
         'total_completadas': totalCompletadas,
         'total_reiterados': reiteradosValidos.length,
         'porcentaje_reiteracion': porcentaje,
@@ -162,6 +195,18 @@ class CalidadTrazaService {
     return '${p[1]}-${p[0]}'; // MM-YYYY → YYYY-MM
   }
 
+  /// Orden: remuneración (BD Kepler), formato alt., mes trabajo, alt. — sin duplicados.
+  List<String> _periodosConsultaApiYRed(String periodoRemuneracion) {
+    final rem = _periodoCanonicoMmYyyy(periodoRemuneracion);
+    final trabajo = periodoTrabajoDesdeRemuneracion(rem);
+    final seen = <String>{};
+    final out = <String>[];
+    for (final p in [rem, _periodoAlternativo(rem), trabajo, _periodoAlternativo(trabajo)]) {
+      if (seen.add(p)) out.add(p);
+    }
+    return out;
+  }
+
   /// Mes de medición (1–12) desde período "MM-YYYY" o "YYYY-MM".
   int getMesMedicion(String periodo) => _mesAnnoPeriodo(periodo).$1;
 
@@ -177,6 +222,54 @@ class CalidadTrazaService {
       return (int.tryParse(p[1]) ?? 0, int.tryParse(p[0]) ?? 0);
     }
     return (int.tryParse(p[0]) ?? 0, int.tryParse(p[1]) ?? 0);
+  }
+
+  /// Normaliza a "MM-YYYY" para comparar con [_mesAnnoPeriodo].
+  String _periodoCanonicoMmYyyy(String periodo) {
+    final p = periodo.split('-');
+    if (p.length != 2) return periodo;
+    if (p[0].length == 4) return '${p[1]}-${p[0]}';
+    return periodo;
+  }
+
+  /// Fecha de trabajo declarada en la fila (evita mostrar reiterados de otro mes si `periodo` en BD viene mal cargado).
+  DateTime? _fechaTrabajoDesdeFilaCalidad(Map<String, dynamic> o) {
+    for (final key in [
+      'fecha',
+      'fecha_original',
+      'fecha_trabajo',
+      'fecha_de_trabajo',
+    ]) {
+      final s = o[key]?.toString().trim();
+      if (s == null || s.isEmpty) continue;
+      final parts = _partirFecha(s);
+      if (parts == null) continue;
+      final d = int.tryParse(parts[0]) ?? 0;
+      final m = int.tryParse(parts[1]) ?? 0;
+      var y = int.tryParse(parts[2]) ?? 0;
+      if (y < 100) y += 2000;
+      try {
+        if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 2000) {
+          return DateTime(y, m, d);
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Solo filas cuya fecha de trabajo cae en el mes/año de medición del bono.
+  List<Map<String, dynamic>> _filtrarFilasMesMedicion(
+    List<Map<String, dynamic>> filas,
+    String periodo,
+  ) {
+    final canon = _periodoCanonicoMmYyyy(periodo);
+    final (mesEsp, annoEsp) = _mesAnnoPeriodo(canon);
+    if (mesEsp < 1 || mesEsp > 12 || annoEsp < 2000) return filas;
+    return filas.where((o) {
+      final dt = _fechaTrabajoDesdeFilaCalidad(o);
+      if (dt == null) return true;
+      return dt.year == annoEsp && dt.month == mesEsp;
+    }).toList();
   }
 
   /// Variantes de RUT para calidad (incluye sin guión vía ProduccionService.rutVariantes).
@@ -197,14 +290,17 @@ class CalidadTrazaService {
   /// Cuando `calidad_por_red` no tiene filas, arma desglose por tecnología desde calidad_api_script.
   Future<Map<String, dynamic>?> _calidadPorTecnologiaDesdeApiScript(
     String rut,
-    String periodo,
+    String periodoRemuneracion,
   ) async {
     try {
       final variantes = _rutVariantesCalidad(rut);
       if (variantes.isEmpty) return null;
 
+      final periodoRem = _periodoCanonicoMmYyyy(periodoRemuneracion);
+      final periodoTrabajo = periodoTrabajoDesdeRemuneracion(periodoRem);
+
       List<Map<String, dynamic>> todas = [];
-      for (final per in {periodo, _periodoAlternativo(periodo)}) {
+      for (final per in {periodoRem, _periodoAlternativo(periodoRem)}) {
         try {
           final resp = await _supabase
               .from('calidad_api_script')
@@ -212,10 +308,16 @@ class CalidadTrazaService {
               .inFilter('rut_o_bucket', variantes)
               .eq('periodo', per)
               .limit(3000);
-          todas.addAll(List<Map<String, dynamic>>.from(resp as List));
+          final list = List<Map<String, dynamic>>.from(resp as List);
+          if (list.isNotEmpty) {
+            todas = list;
+            break;
+          }
         } catch (_) {}
       }
       if (todas.isEmpty) return null;
+
+      todas = _filtrarFilasMesMedicion(todas, periodoTrabajo);
 
       // Deduplicar por orden + fecha si existe
       final visto = <String>{};
@@ -262,10 +364,11 @@ class CalidadTrazaService {
           unicas.where((o) => _esReiterado(o['es_reiterado'])).toList();
 
       print(
-          '📋 [Calidad] por_tecnología vía calidad_api_script periodo=$periodo techs=${porTecnologia.length}');
+          '📋 [Calidad] por_tecnología vía calidad_api_script rem=$periodoRem trabajo=$periodoTrabajo techs=${porTecnologia.length}');
 
       return {
-        'periodo': periodo,
+        'periodo': periodoTrabajo,
+        'periodo_remuneracion': periodoRem,
         'total_completadas': totalCompletadas,
         'total_reiterados': totalReiterados,
         'porcentaje_reiteracion':
@@ -281,39 +384,43 @@ class CalidadTrazaService {
   }
 
   /// Calidad por período desglosada por tecnología (para contrato antiguo).
+  /// [periodoRemuneracion] = MM-YYYY de liquidación (como [getPeriodoMidiendo]).
   /// Usa tabla calidad_por_red: rut_o_bucket, periodo, red, total_ordenes, reiteradas, pct_reiteracion.
   Future<Map<String, dynamic>?> obtenerCalidadPorPeriodoPorTecnologia(
     String rut,
-    String periodo,
+    String periodoRemuneracion,
   ) async {
     try {
+      final periodoRem = _periodoCanonicoMmYyyy(periodoRemuneracion);
+      final periodoTrabajo = periodoTrabajoDesdeRemuneracion(periodoRem);
+      final candidatos = _periodosConsultaApiYRed(periodoRem);
+
       final variantesRut = ProduccionService.rutVariantes(rut);
       List<dynamic> filas = [];
+      String? periodoRedUsado;
       if (variantesRut.isNotEmpty) {
-        filas = await _supabase
-            .from('calidad_por_red')
-            .select('red, total_ordenes, reiteradas, pct_reiteracion')
-            .inFilter('rut_o_bucket', variantesRut)
-            .eq('periodo', periodo)
-            .limit(100) as List;
-
-        if (filas.isEmpty) {
-          final periodoAlt = _periodoAlternativo(periodo);
+        for (final cand in candidatos) {
           filas = await _supabase
               .from('calidad_por_red')
               .select('red, total_ordenes, reiteradas, pct_reiteracion')
               .inFilter('rut_o_bucket', variantesRut)
-              .eq('periodo', periodoAlt)
+              .eq('periodo', cand)
               .limit(100) as List;
           if (filas.isNotEmpty) {
-            print('📋 [Calidad] calidad_por_red usó periodo alternativo: $periodoAlt (original: $periodo)');
+            periodoRedUsado = cand;
+            break;
           }
+        }
+        if (periodoRedUsado != null && periodoRedUsado != periodoRem) {
+          print(
+              '📋 [Calidad] calidad_por_red período en BD: $periodoRedUsado (rem esperado: $periodoRem)');
         }
       }
 
       if (filas.isEmpty) {
-        print('⚠️ [Calidad] calidad_por_red sin datos: rut=$rut periodo=$periodo — intentando calidad_api_script');
-        return await _calidadPorTecnologiaDesdeApiScript(rut, periodo);
+        print(
+            '⚠️ [Calidad] calidad_por_red sin datos: rut=$rut rem=$periodoRem — intentando calidad_api_script');
+        return await _calidadPorTecnologiaDesdeApiScript(rut, periodoRem);
       }
 
       final acumPorTec = <String, Map<String, dynamic>>{};
@@ -354,12 +461,12 @@ class CalidadTrazaService {
 
       if (totalCompletadas == 0) return null;
 
-      // Detalle reiterados (ambos formatos de período)
+      // Detalle reiterados: misma prioridad que calidad_api_script (rem → trabajo legacy)
       List<Map<String, dynamic>> detalle = [];
       try {
         final variantes = _rutVariantesCalidad(rut);
         if (variantes.isNotEmpty) {
-          for (final per in {periodo, _periodoAlternativo(periodo)}) {
+          for (final per in candidatos) {
             try {
               final resp = await _supabase
                   .from('calidad_api_script')
@@ -375,11 +482,17 @@ class CalidadTrazaService {
         }
       } catch (_) {}
 
+      detalle = _filtrarFilasMesMedicion(detalle, periodoTrabajo);
+      final reitListado = detalle.length;
+      final pctListado =
+          totalCompletadas > 0 ? reitListado / totalCompletadas * 100 : 0.0;
+
       return {
-        'periodo': periodo,
+        'periodo': periodoTrabajo,
+        'periodo_remuneracion': periodoRem,
         'total_completadas': totalCompletadas,
-        'total_reiterados': totalReiterados,
-        'porcentaje_reiteracion': totalCompletadas > 0 ? totalReiterados / totalCompletadas * 100 : 0.0,
+        'total_reiterados': reitListado,
+        'porcentaje_reiteracion': pctListado,
         'por_tecnologia': porTecnologia,
         'detalle': detalle,
       };
@@ -473,31 +586,44 @@ class CalidadTrazaService {
   }
 
   /// Ranking de todos los técnicos para el período.
+  /// [periodo] = mes de remuneración MM-YYYY (como en BD); prueba formatos y mes trabajo legacy.
   /// Retorna mapa con 'ranking' (lista ordenada por porcentaje asc) y 'totalTecnicos'.
   Future<Map<String, dynamic>> obtenerRankingPorPeriodo(String periodo) async {
     try {
-      // Query 1: todas las completadas del período
-      final respComp = await _supabase
-          .from('calidad_api_script')
-          .select('rut_o_bucket, tecnico')
-          .eq('periodo', periodo)
-          .eq('estado', 'Completado')
-          .limit(10000);
+      final candidatos = _periodosConsultaApiYRed(periodo);
+      List<Map<String, dynamic>> completadas = [];
+      List<Map<String, dynamic>> reiteradosRaw = [];
+      String? perUsado;
+      for (final per in candidatos) {
+        try {
+          final respComp = await _supabase
+              .from('calidad_api_script')
+              .select('rut_o_bucket, tecnico')
+              .eq('periodo', per)
+              .eq('estado', 'Completado')
+              .limit(10000);
+          final respReit = await _supabase
+              .from('calidad_api_script')
+              .select('rut_o_bucket, tecnico, es_reiterado, reiterada_valida')
+              .eq('periodo', per)
+              .limit(10000);
+          final c = List<Map<String, dynamic>>.from(respComp as List);
+          final r = List<Map<String, dynamic>>.from(respReit as List);
+          if (c.isNotEmpty || r.isNotEmpty) {
+            completadas = c;
+            reiteradosRaw = r;
+            perUsado = per;
+            break;
+          }
+        } catch (_) {}
+      }
 
-      // Query 2: todos los reiterados del período
-      // (traer todos y filtrar en cliente: es_reiterado puede ser true o "SI")
-      final respReit = await _supabase
-          .from('calidad_api_script')
-          .select('rut_o_bucket, tecnico, es_reiterado, reiterada_valida')
-          .eq('periodo', periodo)
-          .limit(10000);
-
-      final completadas = List<Map<String, dynamic>>.from(respComp as List);
-      final reiterados = (List<Map<String, dynamic>>.from(respReit as List))
+      final reiterados = reiteradosRaw
           .where((o) => _esReiterado(o['es_reiterado']))
           .toList();
 
-      print('📊 [CalidadRanking] periodo=$periodo | completadas=${completadas.length} | es_reiterado_true=${reiterados.length}');
+      print(
+          '📊 [CalidadRanking] periodo_bd=$perUsado pedido=$periodo | completadas=${completadas.length} | es_reiterado_true=${reiterados.length}');
       if (reiterados.isNotEmpty) {
         print('📊 [CalidadRanking] Primer reiterado: rut=${reiterados.first['rut_o_bucket']} es_reit=${reiterados.first['es_reiterado']} valida=${reiterados.first['reiterada_valida']}');
       }

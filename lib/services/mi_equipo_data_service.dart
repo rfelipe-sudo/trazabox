@@ -280,14 +280,16 @@ class MiEquipoDataService {
       return {'reiterados': 0, 'total': 0, 'porcentaje': 0.0};
     }
     try {
-      final periodo =
-          '${mesSeleccionado.month.toString().padLeft(2, '0')}-${mesSeleccionado.year}';
+      // Mes seleccionado = mes de trabajo; calidad_api_script guarda mes de remuneración (+1).
+      final rem = DateTime(mesSeleccionado.year, mesSeleccionado.month + 1, 1);
+      final periodoRem =
+          '${rem.month.toString().padLeft(2, '0')}-${rem.year}';
 
       // Reiterados y total desde calidad_api_script
       final resp = await _supabase
           .from('calidad_api_script')
           .select('rut_o_bucket, es_reiterado')
-          .eq('periodo', periodo)
+          .eq('periodo', periodoRem)
           .inFilter('rut_o_bucket', rutsEquipo);
 
       final lista = resp as List;
@@ -385,11 +387,13 @@ class MiEquipoDataService {
           .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4')
           .inFilter('rut_tecnico', rutsLista);
 
-      final periodoAnt = '$mm-${mesAnt.year}';
+      final remAnt = DateTime(mesAnt.year, mesAnt.month + 1, 1);
+      final periodoAntRem =
+          '${remAnt.month.toString().padLeft(2, '0')}-${remAnt.year}';
       final respCalidad = await _supabase
           .from('calidad_api_script')
           .select('rut_o_bucket, es_reiterado')
-          .eq('periodo', periodoAnt)
+          .eq('periodo', periodoAntRem)
           .inFilter('rut_o_bucket', rutsEquipo);
 
       final listaProd = respProd as List;

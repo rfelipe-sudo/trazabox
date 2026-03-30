@@ -13,7 +13,6 @@ import 'calidad_detalle_screen.dart';
 import 'produccion_screen.dart';
 import 'consumo_screen.dart';
 import 'reversa_screen.dart';
-import 'configuracion_screen.dart';
 
 class TuMesScreen extends StatefulWidget {
   const TuMesScreen({super.key});
@@ -60,8 +59,10 @@ class _TuMesScreenState extends State<TuMesScreen> {
   @override
   void initState() {
     super.initState();
-    _periodoCerrado = _calidadService.getPeriodoMidiendo();
-    _periodoActual = _calidadService.getPeriodoProximo();
+    _periodoCerrado = _calidadService
+        .periodoTrabajoDesdeRemuneracion(_calidadService.getPeriodoMidiendo());
+    _periodoActual = _calidadService
+        .periodoTrabajoDesdeRemuneracion(_calidadService.getPeriodoProximo());
     _cargarDatos();
   }
 
@@ -259,8 +260,9 @@ class _TuMesScreenState extends State<TuMesScreen> {
         _calidadCerrado = resultados[0];
         _calidadActual = resultados[1];
         _calidadAnterior = null;
-        _periodoCerrado = periodoBonoMarzo;
-        _periodoActual = periodoBonoAbril;
+        // Estado UI = mes de trabajo (mapas ya traen `periodo` trabajo; fallback coherente con etiquetas)
+        _periodoCerrado = _calidadService.periodoTrabajoDesdeRemuneracion(periodoBonoMarzo);
+        _periodoActual = _calidadService.periodoTrabajoDesdeRemuneracion(periodoBonoAbril);
         _periodoAnterior = '';
       });
     } catch (e) {
@@ -272,8 +274,8 @@ class _TuMesScreenState extends State<TuMesScreen> {
         _calidadCerrado = null;
         _calidadActual = null;
         _calidadAnterior = null;
-        _periodoCerrado = periodoBonoMarzo;
-        _periodoActual = periodoBonoAbril;
+        _periodoCerrado = _calidadService.periodoTrabajoDesdeRemuneracion(periodoBonoMarzo);
+        _periodoActual = _calidadService.periodoTrabajoDesdeRemuneracion(periodoBonoAbril);
         _periodoAnterior = '';
       });
     }
@@ -340,18 +342,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
         title: const Text('Tu Mes'),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const ConfiguracionScreen(),
-              ),
-            ),
-            tooltip: 'Configuración',
-          ),
-        ],
       ),
       body: _cargando
           ? const CreacionesLoading(
@@ -525,51 +515,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
                 ],
               ),
             ),
-            if (_periodoCerrado.isNotEmpty || _periodoActual.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  Chip(
-                    avatar: Icon(
-                      _tipoContratoCalidad == 'antiguo'
-                          ? Icons.hub_outlined
-                          : Icons.merge_type,
-                      size: 18,
-                      color: _tipoContratoCalidad == 'antiguo'
-                          ? Colors.orange[200]
-                          : Colors.lightBlue[200],
-                    ),
-                    label: Text(
-                      _tipoContratoCalidad == 'antiguo'
-                          ? 'Contrato antiguo · por tecnología'
-                          : 'Contrato nuevo · consolidado',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    backgroundColor: Colors.grey[800],
-                    side: BorderSide(
-                      color: _tipoContratoCalidad == 'antiguo'
-                          ? Colors.orange.withOpacity(0.5)
-                          : Colors.cyan.withOpacity(0.5),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                  ),
-                  Chip(
-                    label: Text(
-                      'Medición: $_periodoCerrado · $_periodoActual',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.grey[400],
-                      ),
-                    ),
-                    backgroundColor: Colors.grey[850],
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                  ),
-                ],
-              ),
-            ],
             const SizedBox(height: 16),
             
             // Dos columnas para los períodos
@@ -581,7 +526,11 @@ class _TuMesScreenState extends State<TuMesScreen> {
                     child: InkWell(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const CalidadDetalleScreen()),
+                        MaterialPageRoute(
+                          builder: (_) => const CalidadDetalleScreen(
+                            initiallyExpandedIndex: 0,
+                          ),
+                        ),
                       ),
                       child: Container(
                         padding: const EdgeInsets.all(12),
@@ -655,7 +604,11 @@ class _TuMesScreenState extends State<TuMesScreen> {
                     child: InkWell(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const CalidadDetalleScreen()),
+                        MaterialPageRoute(
+                          builder: (_) => const CalidadDetalleScreen(
+                            initiallyExpandedIndex: 1,
+                          ),
+                        ),
                       ),
                       child: Container(
                         padding: const EdgeInsets.all(12),
@@ -1658,8 +1611,9 @@ class _TuMesScreenState extends State<TuMesScreen> {
   Future<void> _mostrarDetalleCalidad(
     BuildContext context,
     Map<String, dynamic>? calidadData,
-    String periodo,
-  ) async {
+    String periodo, {
+    int? totalCompletadasOverride,
+  }) async {
     if (calidadData == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No hay datos de calidad para este período')),
@@ -1672,20 +1626,39 @@ class _TuMesScreenState extends State<TuMesScreen> {
     
     if (rutTecnico == null) return;
 
-    // Cargar ranking de calidad
-    final rankingCalidad = await _produccionService.obtenerPosicionCalidad(rutTecnico, periodo);
+    final periodoRemRanking =
+        (calidadData['periodo_remuneracion']?.toString().trim().isNotEmpty == true)
+            ? calidadData['periodo_remuneracion'].toString()
+            : _calidadService.periodoRemuneracionDesdeTrabajo(periodo);
+
+    // Cargar ranking de calidad (calidad_api_script usa mes de remuneración)
+    final rankingCalidad =
+        await _produccionService.obtenerPosicionCalidad(rutTecnico, periodoRemRanking);
     
-    // Cargar detalle de reiterados
+    // Reiterados solo de este periodo (misma medición que la tarjeta)
     final detalleReiterados = await _produccionService.obtenerDetalleReiteradosPorPeriodo(
       rutTecnico,
       periodo,
     );
 
     final totalReiterados = (calidadData['total_reiterados'] as num?)?.toInt() ?? 0;
-    final totalCompletadas = (calidadData['total_completadas'] as num?)?.toInt() ?? 0;
-    final porcentaje = (calidadData['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
+    final totalCompletadas = totalCompletadasOverride ??
+        (calidadData['total_completadas'] as num?)?.toInt() ??
+        0;
+    final porcentaje = totalCompletadas > 0
+        ? (totalReiterados / totalCompletadas) * 100.0
+        : (calidadData['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
     final promedioDias = (calidadData['promedio_dias'] as num?)?.toDouble() ?? 0.0;
-    final nombreMes = _getNombreMesDesdePeriodo(periodo);
+    // periodo = MM-YYYY mes de trabajo → título = mes de bonificación (pago)
+    final (mesTrabajo, annoTrabajo) = _calidadService.parseMesAnnoMedicion(periodo);
+    String tituloBonoMes = '';
+    if (mesTrabajo >= 1 && mesTrabajo <= 12 && annoTrabajo > 2000) {
+      final inicioMesBono = DateTime(annoTrabajo, mesTrabajo + 1, 1);
+      tituloBonoMes = _getNombreMes(inicioMesBono.month);
+    }
+    if (tituloBonoMes.isEmpty) {
+      tituloBonoMes = _calidadService.getNombreBono(periodo);
+    }
     
     final posicion = rankingCalidad['posicion'] ?? 0;
     final totalTecnicos = rankingCalidad['totalTecnicos'] ?? 0;
@@ -1721,7 +1694,7 @@ class _TuMesScreenState extends State<TuMesScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Reiterados - $nombreMes',
+                        'Reiterados · Bono $tituloBonoMes',
                         style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,

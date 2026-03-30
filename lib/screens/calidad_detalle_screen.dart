@@ -6,7 +6,10 @@ import '../services/produccion_service.dart';
 import '../widgets/creaciones_loading.dart';
 
 class CalidadDetalleScreen extends StatefulWidget {
-  const CalidadDetalleScreen({super.key});
+  const CalidadDetalleScreen({super.key, this.initiallyExpandedIndex});
+
+  /// 0 = 1ª tarjeta (bono en medición), 1 = 2ª, 2 = 3ª. null = todas plegadas al abrir.
+  final int? initiallyExpandedIndex;
 
   @override
   State<CalidadDetalleScreen> createState() => _CalidadDetalleScreenState();
@@ -20,7 +23,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
   String? _tecnicoRut;
   String _tipoContrato = 'nuevo'; // 'nuevo' = consolidada; 'antiguo' = por tecnología
 
-  // Calidad por período
+  // Calidad por período (1 = midiendo como Tu mes, 2 = próximo, 3 = siguiente)
   Map<String, dynamic>? _calFeb;
   Map<String, dynamic>? _calMar;
   Map<String, dynamic>? _calAbr;
@@ -37,9 +40,11 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
   @override
   void initState() {
     super.initState();
-    _periodoFeb = _calidadService.getPeriodoCerrado();
-    _periodoMar = _calidadService.getPeriodoMidiendo();
-    _periodoAbr = _calidadService.getPeriodoProximo();
+    // Misma secuencia que Tu mes + tercer bono: no usar getPeriodoCerrado() aquí
+    // (desplazaba todo un mes: en marzo mostraba trabajo enero en la 1ª tarjeta).
+    _periodoFeb = _calidadService.getPeriodoMidiendo();
+    _periodoMar = _calidadService.getPeriodoProximo();
+    _periodoAbr = _calidadService.getPeriodoPosterior();
     _cargarDatos();
   }
 
@@ -65,10 +70,13 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
     try {
       final tipoContrato = await _calidadService.obtenerTipoContrato(_tecnicoRut!, prefs: prefs);
 
-      // Q de producción por período (mes de medición)
-      final (mesFeb, annoFeb) = _parsePeriodo(_periodoFeb);
-      final (mesMar, annoMar) = _parsePeriodo(_periodoMar);
-      final (mesAbr, annoAbr) = _parsePeriodo(_periodoAbr);
+      // Q de producción por mes de trabajo (getters devuelven remuneración Kepler)
+      final ptFeb = _calidadService.periodoTrabajoDesdeRemuneracion(_periodoFeb);
+      final ptMar = _calidadService.periodoTrabajoDesdeRemuneracion(_periodoMar);
+      final ptAbr = _calidadService.periodoTrabajoDesdeRemuneracion(_periodoAbr);
+      final (mesFeb, annoFeb) = _parsePeriodo(ptFeb);
+      final (mesMar, annoMar) = _parsePeriodo(ptMar);
+      final (mesAbr, annoAbr) = _parsePeriodo(ptAbr);
 
       final prodResultados = await Future.wait([
         mesFeb > 0 ? _produccionService.obtenerResumenMesRGU(_tecnicoRut!, mes: mesFeb, anno: annoFeb) : Future.value(<String, dynamic>{}),
@@ -155,25 +163,27 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
                         _buildEvolucionChart(),
                         const SizedBox(height: 16),
 
-                        // BONO FEB — cerrado
+                        // 1ª tarjeta: bono en medición (periodo = remuneración Kepler en BD)
                         _buildBonoCard(
                           periodo: _periodoFeb,
                           calidad: _calFeb,
-                          estado: _EstadoBono.cerrado,
+                          estado: _EstadoBono.midiendo,
                           completadasOverride: _prodFeb,
+                          initiallyExpanded: widget.initiallyExpandedIndex == 0,
                         ),
                         const SizedBox(height: 12),
 
-                        // BONO MAR — midiendo
+                        // 2ª: siguiente bono (remuneración mes +1)
                         _buildBonoCard(
                           periodo: _periodoMar,
                           calidad: _calMar,
-                          estado: _EstadoBono.midiendo,
+                          estado: _EstadoBono.proximo,
                           completadasOverride: _prodMar,
+                          initiallyExpanded: widget.initiallyExpandedIndex == 1,
                         ),
                         const SizedBox(height: 12),
 
-                        // BONO ABR — próximo o midiendo según datos
+                        // 3ª: bono posterior (remuneración mes +2)
                         _buildBonoCard(
                           periodo: _periodoAbr,
                           calidad: _calAbr,
@@ -181,6 +191,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
                               ? _EstadoBono.midiendo
                               : _EstadoBono.proximo,
                           completadasOverride: _prodAbr,
+                          initiallyExpanded: widget.initiallyExpandedIndex == 2,
                         ),
                         const SizedBox(height: 24),
                       ],
@@ -205,17 +216,17 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
 
     final puntos = [
       _PuntoEvolucion(
-        label: 'BONO ${_calidadService.getNombreBono(_periodoFeb)}',
+        label: 'BONO ${_calidadService.getNombreBono(_calidadService.periodoTrabajoDesdeRemuneracion(_periodoFeb))}',
         pct: pctFeb,
         tieneData: _calFeb != null,
       ),
       _PuntoEvolucion(
-        label: 'BONO ${_calidadService.getNombreBono(_periodoMar)}',
+        label: 'BONO ${_calidadService.getNombreBono(_calidadService.periodoTrabajoDesdeRemuneracion(_periodoMar))}',
         pct: pctMar,
         tieneData: _calMar != null,
       ),
       _PuntoEvolucion(
-        label: 'BONO ${_calidadService.getNombreBono(_periodoAbr)}',
+        label: 'BONO ${_calidadService.getNombreBono(_calidadService.periodoTrabajoDesdeRemuneracion(_periodoAbr))}',
         pct: pctAbr,
         tieneData: _calAbr != null,
       ),
@@ -298,9 +309,11 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
     required Map<String, dynamic>? calidad,
     required _EstadoBono estado,
     int completadasOverride = 0,
+    bool initiallyExpanded = false,
   }) {
-    final nombreBono = _calidadService.getNombreBono(periodo);
-    final infoPeriodo = _calidadService.getInfoPeriodo(periodo);
+    final periodoTrabajo = _calidadService.periodoTrabajoDesdeRemuneracion(periodo);
+    final nombreBono = _calidadService.getNombreBono(periodoTrabajo);
+    final infoPeriodo = _calidadService.getInfoPeriodo(periodoTrabajo);
 
     final reiterados = (calidad?['total_reiterados'] as num?)?.toInt() ?? 0;
     final completadasOrig = (calidad?['total_completadas'] as num?)?.toInt() ?? 0;
@@ -318,6 +331,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
       color: Colors.grey[850],
       elevation: 2,
       child: ExpansionTile(
+        initiallyExpanded: initiallyExpanded,
         tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         leading: _iconoEstado(estado),
