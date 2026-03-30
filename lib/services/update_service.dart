@@ -118,7 +118,8 @@ class UpdateService {
   }
 
   /// Consulta GitHub y compara con [PackageInfo.version] (sin build).
-  Future<UpdateCheckResult> checkForUpdate() async {
+  /// Punto de entrada único desde el arranque ([SplashScreen]); no depende del estado de auth.
+  static Future<UpdateCheckResult> checkForUpdate() async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();
       final current = packageInfo.version.trim();

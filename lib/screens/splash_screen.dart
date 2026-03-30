@@ -15,6 +15,10 @@ const _orange = Color(0xFFFF7A2F);
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
+
+  /// Debe coincidir con [MaterialApp.initialRoute] — primer destino al abrir la app.
+  static const String routeName = '/splash';
+
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
@@ -54,13 +58,13 @@ class _SplashScreenState extends State<SplashScreen>
 
   bool _navegado = false;
 
-  /// Consulta GitHub en paralelo al splash.
+  /// Consulta GitHub en paralelo a la animación; antes de /home siempre se espera en _runUpdateGate.
   late Future<UpdateCheckResult> _updateCheckFuture;
 
   @override
   void initState() {
     super.initState();
-    _updateCheckFuture = UpdateService().checkForUpdate();
+    _updateCheckFuture = UpdateService.checkForUpdate();
 
     // Aurora
     _aurora = AnimationController(vsync: this, duration: const Duration(seconds: 12))
@@ -121,6 +125,7 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _navegar() async {
     if (!mounted) return;
 
+    // Obligatorio: comprobar actualización (y diálogos) antes de cualquier otra pantalla, con o sin técnico en sesión.
     final puedeEntrar = await _runUpdateGate();
 
     if (!mounted) return;
@@ -190,7 +195,7 @@ class _SplashScreenState extends State<SplashScreen>
         return false;
       }
 
-      _updateCheckFuture = UpdateService().checkForUpdate();
+      _updateCheckFuture = UpdateService.checkForUpdate();
       result = await _updateCheckFuture;
     }
     return false;

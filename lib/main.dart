@@ -298,8 +298,11 @@ class AgenteDesconexionesApp extends StatelessWidget {
         title: 'Agente de Desconexiones',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme,
-        home: const SplashScreen(),
+        // Siempre arranca en splash (verificación de actualización); nunca en Home ni AppWrapper.
+        // El técnico autenticado en prefs también pasa primero por [SplashScreen].
+        initialRoute: SplashScreen.routeName,
         routes: {
+          SplashScreen.routeName: (context) => const SplashScreen(),
           '/home': (context) => const AppWrapper(),
           '/asistente-cto': (context) => const AsistenteCtoScreen(),
           '/asistente-crea-terreno': (context) => const AsistenteCreaTerrenoScreen(),
