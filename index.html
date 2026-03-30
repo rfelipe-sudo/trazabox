@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrazaBox</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f1117;
+    color: white;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .logo {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+  }
+  .logo span { color: #1D9E75; }
+  .msg {
+    font-size: 14px;
+    color: #6B7280;
+  }
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #1D9E75;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .manual {
+    display: none;
+    margin-top: 8px;
+    padding: 12px 24px;
+    background: #1D9E75;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="logo">Traza<span>Box</span></div>
+<div class="spinner" id="spinner"></div>
+<p class="msg" id="msg">Preparando descarga...</p>
+<a class="manual" id="manual-btn">Descargar manualmente</a>
+
+<script>
+const GITHUB_USER = 'rfelipe-sudo';
+const GITHUB_REPO = 'trazabox';
+
+async function startDownload() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/releases/latest`);
+    const data = await res.json();
+    const asset = data.assets?.find(a => a.name.endsWith('.apk'));
+
+    if (!asset) throw new Error('APK no encontrado');
+
+    const url = asset.browser_download_url;
+
+    const btn = document.getElementById('manual-btn');
+    btn.href = url;
+
+    document.getElementById('msg').textContent = 'Descargando...';
+    window.location.href = url;
+
+    setTimeout(() => {
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('msg').textContent = 'Si no inició la descarga, pulsa el botón:';
+      btn.style.display = 'inline-block';
+    }, 4000);
+
+  } catch (e) {
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('msg').textContent = 'Error al obtener la descarga.';
+    const btn = document.getElementById('manual-btn');
+    btn.href = `https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/latest`;
+    btn.textContent = 'Ir a descargas';
+    btn.style.display = 'inline-block';
+  }
+}
+
+startDownload();
+</script>
+</body>
+</html>
