@@ -28,7 +28,7 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
   Map<String, dynamic>? _calMar;
   Map<String, dynamic>? _calAbr;
 
-  // Q de producción (ordenesCompletadas) por período, para alinear denominador
+  // Q de producción (ordenesCompletadasCalidad, sin REDES) por período
   int _prodFeb = 0;
   int _prodMar = 0;
   int _prodAbr = 0;
@@ -84,9 +84,15 @@ class _CalidadDetalleScreenState extends State<CalidadDetalleScreen> {
         mesAbr > 0 ? _produccionService.obtenerResumenMesRGU(_tecnicoRut!, mes: mesAbr, anno: annoAbr) : Future.value(<String, dynamic>{}),
       ]);
 
-      final prodFeb = (prodResultados[0]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
-      final prodMar = (prodResultados[1]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
-      final prodAbr = (prodResultados[2]['ordenesCompletadas'] as num?)?.toInt() ?? 0;
+      final prodFeb = (prodResultados[0]['ordenesCompletadasCalidad'] as num?)?.toInt() ??
+          (prodResultados[0]['ordenesCompletadas'] as num?)?.toInt() ??
+          0;
+      final prodMar = (prodResultados[1]['ordenesCompletadasCalidad'] as num?)?.toInt() ??
+          (prodResultados[1]['ordenesCompletadas'] as num?)?.toInt() ??
+          0;
+      final prodAbr = (prodResultados[2]['ordenesCompletadasCalidad'] as num?)?.toInt() ??
+          (prodResultados[2]['ordenesCompletadas'] as num?)?.toInt() ??
+          0;
 
       List<Map<String, dynamic>?> calidadResultados;
       if (tipoContrato == 'antiguo') {

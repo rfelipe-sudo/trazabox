@@ -437,10 +437,12 @@ class _TuMesScreenState extends State<TuMesScreen> {
   Widget _buildCardCalidadCompleto() {
     final now = DateTime.now();
     
-    // Período cerrado — parear con Producción: usar ordenesCompletadas de produccion como denominador
+    // Período cerrado — denominador calidad: completadas producción sin derivación REDES
     final reiteradosCerrado = (_calidadCerrado?['total_reiterados'] as num?)?.toInt() ?? 0;
-    final completadasCerrado = (_produccionCerrado?['ordenesCompletadas'] as num?)?.toInt() ??
-        (_calidadCerrado?['total_completadas'] as num?)?.toInt() ?? 0;
+    final completadasCerrado = (_produccionCerrado?['ordenesCompletadasCalidad'] as num?)?.toInt() ??
+        (_produccionCerrado?['ordenesCompletadas'] as num?)?.toInt() ??
+        (_calidadCerrado?['total_completadas'] as num?)?.toInt() ??
+        0;
     final porcentajeCerrado = completadasCerrado > 0
         ? reiteradosCerrado / completadasCerrado * 100
         : (_calidadCerrado?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
@@ -458,10 +460,12 @@ class _TuMesScreenState extends State<TuMesScreen> {
 
     Color colorCerrado = _getColorCalidad(porcentajeCerrado);
 
-    // Período actual (midiendo) — parear con Producción: usar ordenesCompletadas de produccion como denominador
+    // Período actual — denominador calidad: completadas producción sin derivación REDES
     final reiteradosActual = (_calidadActual?['total_reiterados'] as num?)?.toInt() ?? 0;
-    final completadasActual = (_produccionActual?['ordenesCompletadas'] as num?)?.toInt() ??
-        (_calidadActual?['total_completadas'] as num?)?.toInt() ?? 0;
+    final completadasActual = (_produccionActual?['ordenesCompletadasCalidad'] as num?)?.toInt() ??
+        (_produccionActual?['ordenesCompletadas'] as num?)?.toInt() ??
+        (_calidadActual?['total_completadas'] as num?)?.toInt() ??
+        0;
     final porcentajeActual = completadasActual > 0
         ? reiteradosActual / completadasActual * 100
         : (_calidadActual?['porcentaje_reiteracion'] as num?)?.toDouble() ?? 0.0;
@@ -699,7 +703,7 @@ class _TuMesScreenState extends State<TuMesScreen> {
   }
 
   /// Contenido del período de calidad: total (contrato nuevo) o desglose por tecnología (contrato antiguo).
-  /// completadasOverride: ordenesCompletadas de Producción para parear denominador (ej: 2/89).
+  /// completadasOverride: ordenesCompletadasCalidad (o completadas) de Producción para el denominador Q.
   List<Widget> _buildContenidoCalidadPeriodo(
     Map<String, dynamic>? calidad,
     Color colorBase, {

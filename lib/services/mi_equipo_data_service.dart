@@ -133,6 +133,7 @@ class MiEquipoDataService {
     if (rutsEquipo.isEmpty) {
       return {
         'total_completadas': 0,
+        'total_completadas_calidad': 0,
         'total_rgu': 0.0,
         'registros': <Map<String, dynamic>>[],
       };
@@ -155,22 +156,26 @@ class MiEquipoDataService {
 
       final lista = resp as List;
       int completadas = 0;
+      int completadasCalidad = 0;
       double totalRgu = 0;
       for (final r in lista) {
         if (_cuentaComoProduccion(r)) {
           completadas++;
+          if (!ProduccionService.esDerivacionRedes(r)) completadasCalidad++;
           totalRgu += ((r['rgu_total'] as num?) ?? 0).toDouble();
         }
       }
 
       return {
         'total_completadas': completadas,
+        'total_completadas_calidad': completadasCalidad,
         'total_rgu': totalRgu,
         'registros': lista.cast<Map<String, dynamic>>(),
       };
     } catch (e) {
       return {
         'total_completadas': 0,
+        'total_completadas_calidad': 0,
         'total_rgu': 0.0,
         'registros': <Map<String, dynamic>>[],
       };
@@ -299,10 +304,11 @@ class MiEquipoDataService {
       }
       final totalCalidad = lista.length;
 
-      // Total: preferir produccion; si 0, usar calidad_api_script
+      // Total: preferir produccion (denominador calidad = completadas sin REDES); si 0, usar calidad_api_script
       final prod = await obtenerProduccionMes(rutsEquipo, mesSeleccionado);
-      final totalProd = prod['total_completadas'] as int? ?? 0;
-      final total = totalProd > 0 ? totalProd : totalCalidad;
+      final totalProdAll = prod['total_completadas'] as int? ?? 0;
+      final totalProdCalidad = prod['total_completadas_calidad'] as int? ?? 0;
+      final total = totalProdAll > 0 ? totalProdCalidad : totalCalidad;
       final porcentaje = total > 0 ? (reiterados / total) * 100 : 0.0;
 
       return {
@@ -398,6 +404,7 @@ class MiEquipoDataService {
 
       final listaProd = respProd as List;
       int completadas = 0;
+      int completadasCalidad = 0;
       double totalRgu = 0;
       int quiebre = 0;
       for (final r in listaProd) {
@@ -405,6 +412,7 @@ class MiEquipoDataService {
         final areaDerivacion = r['area_derivacion']?.toString() ?? '';
         if (_cuentaComoProduccion(r)) {
           completadas++;
+          if (!ProduccionService.esDerivacionRedes(r)) completadasCalidad++;
           totalRgu += ((r['rgu_total'] as num?) ?? 0).toDouble();
         } else if (estado == 'No Realizada' && areaDerivacion.toUpperCase() != 'GSA' && areaDerivacion.toUpperCase() != 'REDES' ||
             estado == 'Cancelado' ||
@@ -418,8 +426,9 @@ class MiEquipoDataService {
       for (final r in listaCal) {
         if (_esReiterado(r['es_reiterado'])) reiterados++;
       }
-      // Usar completadas de produccion como denominador (mismo criterio que calidad)
-      final reiteracion = completadas > 0 ? (reiterados / completadas) * 100 : 0.0;
+      // Denominador calidad: producción completada excl. derivación REDES
+      final reiteracion =
+          completadasCalidad > 0 ? (reiterados / completadasCalidad) * 100 : 0.0;
       final totalProd = listaProd.length;
       final quiebrePct = totalProd > 0 ? (quiebre / totalProd) * 100 : 0.0;
 

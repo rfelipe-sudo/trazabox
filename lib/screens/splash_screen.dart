@@ -123,6 +123,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navegar() async {
+    print('🚀 [Splash] Iniciando verificación de actualización...');
     if (!mounted) return;
 
     // Obligatorio: comprobar actualización (y diálogos) antes de cualquier otra pantalla, con o sin técnico en sesión.
@@ -136,6 +137,7 @@ class _SplashScreenState extends State<SplashScreen>
 
   /// `true` si puede continuar a la app principal (al día o flujo de actualización completado).
   Future<bool> _runUpdateGate() async {
+    print('🔍 [Splash] Ejecutando gate de actualización...');
     var result = await _updateCheckFuture;
     if (!mounted) return false;
 

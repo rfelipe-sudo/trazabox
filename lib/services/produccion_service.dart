@@ -27,6 +27,21 @@ class ProduccionService {
   static const String _filtroProduccionEstado =
       'estado.eq.Completado,and(estado.eq.No Realizada,area_derivacion.eq.GSA),and(estado.eq.No Realizada,area_derivacion.eq.REDES)';
 
+  /// Variantes de "No realizada" en TOA / Supabase (género y casing).
+  static bool esEstadoNoRealizada(dynamic orden) {
+    if (orden is! Map) return false;
+    final e = (orden['estado']?.toString() ?? '').trim().toUpperCase();
+    return e == 'NO REALIZADA' || e == 'NO REALIZADO' || e == 'NO REALIZADOS';
+  }
+
+  /// Derivación a redes: igualdad con REDES o texto que contenga REDES (p. ej. "DERIVACION REDES").
+  /// GSA sigue comparándose en igualdad estricta donde aplica.
+  static bool areaDerivacionEsRedes(dynamic raw) {
+    final a = (raw?.toString() ?? '').trim().toUpperCase();
+    if (a.isEmpty) return false;
+    return a == 'REDES' || a.contains('REDES');
+  }
+
   /// Prioridad de estado para deduplicación (menor = mejor). Completado primero, luego No Realizada+GSA/REDES.
   static int prioridadEstado(dynamic orden) {
     if (orden is! Map) return 99;
@@ -34,7 +49,7 @@ class ProduccionService {
     final e = (o['estado']?.toString() ?? '').trim().toUpperCase();
     final a = (o['area_derivacion']?.toString() ?? '').trim().toUpperCase();
     if (e == 'COMPLETADO') return 0;
-    if (e == 'NO REALIZADA' && (a == 'GSA' || a == 'REDES')) return 1;
+    if (esEstadoNoRealizada(o) && (a == 'GSA' || areaDerivacionEsRedes(o['area_derivacion']))) return 1;
     return 2;
   }
 
@@ -46,7 +61,104 @@ class ProduccionService {
     final e = (o['estado']?.toString() ?? '').trim().toUpperCase();
     final a = (o['area_derivacion']?.toString() ?? '').trim().toUpperCase();
     return e == 'COMPLETADO' ||
-        (e == 'NO REALIZADA' && (a == 'GSA' || a == 'REDES'));
+        (esEstadoNoRealizada(o) && (a == 'GSA' || areaDerivacionEsRedes(o['area_derivacion'])));
+  }
+
+  /// `area_derivacion` indica derivación a REDES (misma regla que [areaDerivacionEsRedes]).
+  static bool esDerivacionRedes(dynamic orden) {
+    if (orden is! Map) return false;
+    final o = orden as Map<String, dynamic>;
+    return areaDerivacionEsRedes(o['area_derivacion']);
+  }
+
+  /// CA o texto con ANTIGUO → contrato antiguo; CN u otro → nuevo.
+  static bool esContratoAntiguoTipo(String? tipoContrato) {
+    final t = tipoContrato?.trim().toUpperCase() ?? '';
+    if (t.isEmpty) return false;
+    return t == 'CA' || t.contains('ANTIG');
+  }
+
+  static bool _esFamiliaHfcRedesProducto(Map<String, dynamic> o) {
+    final t = (o['tecnologia']?.toString() ?? '').trim().toUpperCase();
+    if (t == 'HFC') return true;
+    final tr = (o['tipo_red_producto']?.toString() ?? '').trim().toUpperCase();
+    if (tr.isEmpty) return false;
+    return tr.contains('HFC') || tr.contains('CHFC');
+  }
+
+  /// NFTT, FTTH, CFTT, GPON (misma regla 1 RGU para derivación REDES).
+  static bool _esFamiliaFtthRedesProducto(Map<String, dynamic> o) {
+    final t = (o['tecnologia']?.toString() ?? '').trim().toUpperCase();
+    if (t == 'FTTH') return true;
+    final tr = (o['tipo_red_producto']?.toString() ?? '').trim().toUpperCase();
+    if (tr.isEmpty) return false;
+    return tr.contains('FTTH') ||
+        tr.contains('CFTT') ||
+        tr.contains('NFTT') ||
+        tr.contains('GPON');
+  }
+
+  /// (RGU, puntos HFC) efectivos para totales: sustituye valores de BD en derivación REDES.
+  static (double rgu, double ptosHfc) valoresEfectivosProduccionOrden(
+    Map<String, dynamic> orden,
+    bool contratoAntiguo,
+  ) {
+    if (!esDerivacionRedes(orden)) {
+      final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+      final ph = (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
+      return (rgu, ph);
+    }
+    if (_esFamiliaFtthRedesProducto(orden)) {
+      return (1.0, 0.0);
+    }
+    if (_esFamiliaHfcRedesProducto(orden)) {
+      if (contratoAntiguo) return (0.0, 17.0);
+      return (1.0, 0.0);
+    }
+    final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+    final ph = (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
+    return (rgu, ph);
+  }
+
+  /// Agrupa por `orden_trabajo` + `fecha_trabajo`, elige la mejor fila por [prioridadEstado] y fusiona
+  /// `area_derivacion` REDES y campos de producto desde duplicados (p. ej. Completado sin área + No Realizada/REDES).
+  static List<Map<String, dynamic>> deduplicarYFusionarOrdenesProduccion(
+      List<dynamic> combinadas) {
+    final Map<String, List<Map<String, dynamic>>> grupos = {};
+    for (final item in combinadas) {
+      if (item is! Map) continue;
+      final o = Map<String, dynamic>.from(item as Map);
+      final ordenId = (o['orden_trabajo']?.toString() ?? '').trim();
+      if (ordenId.isEmpty) continue;
+      final fechaTrabajo = o['fecha_trabajo']?.toString() ?? '';
+      final key = '$ordenId-$fechaTrabajo';
+      grupos.putIfAbsent(key, () => []).add(o);
+    }
+    final out = <Map<String, dynamic>>[];
+    for (final entry in grupos.entries) {
+      final rows = List<Map<String, dynamic>>.from(entry.value);
+      rows.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
+      final chosen = Map<String, dynamic>.from(rows.first);
+      for (var k = 1; k < rows.length; k++) {
+        final alt = rows[k];
+        if (areaDerivacionEsRedes(alt['area_derivacion']) &&
+            !areaDerivacionEsRedes(chosen['area_derivacion'])) {
+          chosen['area_derivacion'] = alt['area_derivacion'];
+        }
+        final ca = (chosen['area_derivacion']?.toString() ?? '').trim();
+        if (ca.isEmpty && (alt['area_derivacion']?.toString().trim().isNotEmpty ?? false)) {
+          chosen['area_derivacion'] = alt['area_derivacion'];
+        }
+        for (final field in ['tecnologia', 'tipo_red_producto']) {
+          if ((chosen[field]?.toString().trim().isEmpty ?? true) &&
+              (alt[field]?.toString().trim().isNotEmpty ?? false)) {
+            chosen[field] = alt[field];
+          }
+        }
+      }
+      out.add(chosen);
+    }
+    return out;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -997,12 +1109,12 @@ class ProduccionService {
         }
       }
 
-      // 3. Combinar, ordenar (Completado primero), deduplicar y filtrar por mes
+      // 3. Combinar, deduplicar, fusionar duplicados y filtrar por mes
       final combinadas = [...(respRut as List), ...respNombre];
-      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
+      final unicas = deduplicarYFusionarOrdenesProduccion(combinadas);
 
-      final Map<String, dynamic> ordenesMap = {};
-      for (var orden in combinadas) {
+      var n = 0;
+      for (var orden in unicas) {
         final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
         final partesFecha = _partirFecha(fechaStr);
         if (partesFecha == null) continue;
@@ -1010,14 +1122,9 @@ class ProduccionService {
         var annoOrden = int.tryParse(partesFecha[2]) ?? 0;
         if (annoOrden < 100) annoOrden = 2000 + annoOrden;
         if (mesOrden != mesConsulta || annoOrden != annoConsulta) continue;
-
-        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
-        if (ordenId.isEmpty) continue;
-        final key = '$ordenId-$fechaStr';
-        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
+        if (cuentaComoProduccion(orden) && !esDerivacionRedes(orden)) n++;
       }
-
-      return ordenesMap.values.where((r) => cuentaComoProduccion(r)).length;
+      return n;
     } catch (e) {
       print('❌ [Calidad] Error total produccion: $e');
       return 0;
@@ -1142,21 +1249,9 @@ class ProduccionService {
         }
       }
 
-      // 4️⃣ Combinar y deduplicar — SIEMPRE priorizar Completado sobre Suspendido/otros
+      // 4️⃣ Combinar, deduplicar y fusionar REDES/campos desde duplicados (misma OT + fecha)
       final combinadas = [...ordenesPorRut, ...ordenesPorNombre];
-      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
-
-      final Map<String, dynamic> ordenesMap = {};
-      for (var orden in combinadas) {
-        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
-        if (ordenId.isEmpty) continue;
-        final fechaTrabajo = orden['fecha_trabajo']?.toString() ?? '';
-        final key = '$ordenId-$fechaTrabajo';
-        // Primera que vemos gana (ya ordenadas: Completado primero)
-        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
-      }
-
-      final List<dynamic> todasOrdenes = ordenesMap.values.toList();
+      final todasOrdenes = deduplicarYFusionarOrdenesProduccion(combinadas);
       print('📊 [Produccion] Total órdenes únicas combinadas: ${todasOrdenes.length}');
 
       // Filtrar por mes y año seleccionado
@@ -1198,6 +1293,7 @@ class ProduccionService {
           'ptosHfc': 0.0,
           'rguFtth': 0.0,
           'ordenesCompletadas': 0,
+          'ordenesCompletadasCalidad': 0,
           'ordenesAsignadas': 0,
           'ordenesCanceladas': 0,
           'ordenesNoRealizadas': 0,
@@ -1228,6 +1324,7 @@ class ProduccionService {
 
       // Analizar cada día
       int completadas = 0;
+      int ordenesDerivacionRedes = 0;
       int canceladas = 0;
       int noRealizadas = 0;
       double totalRGU = 0;
@@ -1240,6 +1337,8 @@ class ProduccionService {
       // Cuando existe HFC: días con RGU (NFTT/FTTH) vs días con HFC
       int diasRgu = 0;
       int diasHfc = 0;
+
+      final contratoAntiguo = esContratoAntiguoTipo(tipoContrato);
 
       for (var entry in ordenesPorFecha.entries) {
         final fecha = entry.key;
@@ -1257,34 +1356,38 @@ class ProduccionService {
           if (cuentaComoProduccion(orden)) {
             completadas++;
             completadasDia++;
-            final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+            final oMap = orden as Map<String, dynamic>;
+            if (esDerivacionRedes(oMap)) ordenesDerivacionRedes++;
+            final eff = valoresEfectivosProduccionOrden(oMap, contratoAntiguo);
+            final rgu = eff.$1;
+            final ptsHfcOrd = eff.$2;
             // Usar tecnologia (HFC, FTTH, RED_NEUTRA); tipo_red_producto es crudo (CHFC, CFTT, NFTT)
             final tecno = (orden['tecnologia']?.toString().trim().isNotEmpty == true
                     ? orden['tecnologia']?.toString()
                     : null) ??
                 'RED_NEUTRA';
 
-            // Total RGU = suma de TODOS los rgu_total (incluye HFC si tiene puntos en rgu_total)
+            // Total RGU = suma efectiva (derivación REDES con reglas Kepler)
             totalRGU += rgu;
             rguDia += rgu;
             tieneRguDia = tieneRguDia || rgu > 0;
 
             if (tecno.toUpperCase() == 'HFC') {
-              if (((orden['puntos_hfc'] as num?)?.toDouble() ?? 0) > 0) {
-                ptosHfc += (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
-                ptsHfcDia += (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
+              if (ptsHfcOrd > 0) {
+                ptosHfc += ptsHfcOrd;
+                ptsHfcDia += ptsHfcOrd;
                 tieneHfcDia = true;
-              } else if (((orden['rgu_total'] as num?)?.toDouble() ?? 0) > 0) {
-                rguFtth += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+              } else if (rgu > 0) {
+                rguFtth += rgu;
               }
             } else if (tecno.toUpperCase() == 'FTTH') {
-              rguFtth += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+              rguFtth += rgu;
             } else {
-              rguRedNeutra += (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+              rguRedNeutra += rgu;
             }
           } else if (estado == 'Cancelado') {
             canceladas++;
-          } else if (estado == 'No Realizada') {
+          } else if (esEstadoNoRealizada(orden)) {
             noRealizadas++;
           }
         }
@@ -1413,6 +1516,8 @@ class ProduccionService {
         'ptosHfc': ptosHfc,
         'rguFtth': rguFtth,
         'ordenesCompletadas': completadas,
+        'ordenesCompletadasCalidad':
+            (completadas - ordenesDerivacionRedes).clamp(0, completadas),
         'ordenesAsignadas': totalAsignadas,
         'ordenesCanceladas': canceladas,
         'ordenesNoRealizadas': noRealizadas,
@@ -1443,6 +1548,7 @@ class ProduccionService {
         'ptosHfc': 0.0,
         'rguFtth': 0.0,
         'ordenesCompletadas': 0,
+        'ordenesCompletadasCalidad': 0,
         'ordenesAsignadas': 0,
         'ordenesCanceladas': 0,
         'ordenesNoRealizadas': 0,
@@ -1494,18 +1600,22 @@ class ProduccionService {
       // DEBUG TEMPORAL 2: órdenes traídas por RUT antes del filtro en memoria
       debugPrint('🔍 [DetalleRGU] responseRut (órdenes por RUT antes de filtrar): ${ordenesPorRut.length}');
 
-      // 2️⃣ Obtener nombre del técnico
+      // 2️⃣ Obtener nombre del técnico y tipo de contrato (valores efectivos REDES)
       String? nombreTecnico;
+      var contratoAntiguoDetalle = false;
       try {
         final tecnicoResponse = await _supabase
             .from('tecnicos_traza_zc')
-            .select('nombre_completo')
+            .select('nombre_completo, tipo_contrato')
             .eq('rut', rutTecnico)
             .maybeSingle();
         
         if (tecnicoResponse != null) {
           nombreTecnico = tecnicoResponse['nombre_completo']?.toString()?.trim();
           if (nombreTecnico != null && nombreTecnico.isEmpty) nombreTecnico = null;
+          contratoAntiguoDetalle = esContratoAntiguoTipo(
+            tecnicoResponse['tipo_contrato']?.toString(),
+          );
         }
       } catch (e) {
         print('⚠️ [Detalle] Error obteniendo nombre del técnico: $e');
@@ -1531,19 +1641,9 @@ class ProduccionService {
         }
       }
 
-      // 4️⃣ Combinar y deduplicar — SIEMPRE priorizar Completado sobre Suspendido/otros
+      // 4️⃣ Combinar, deduplicar y fusionar REDES/campos desde duplicados
       final combinadas = [...ordenesPorRut, ...ordenesPorNombre];
-      combinadas.sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
-
-      final Map<String, dynamic> ordenesMap = {};
-      for (var orden in combinadas) {
-        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
-        if (ordenId.isEmpty) continue;
-        final fechaTrabajo = orden['fecha_trabajo']?.toString() ?? '';
-        final key = '$ordenId-$fechaTrabajo';
-        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
-      }
-      final todasOrdenes = ordenesMap.values.toList();
+      final todasOrdenes = deduplicarYFusionarOrdenesProduccion(combinadas);
 
       // Filtrar por mes y año — soporta DD/MM/YY y DD.MM.YY
       final ordenesMes = todasOrdenes.where((orden) {
@@ -1590,6 +1690,7 @@ class ProduccionService {
           porDia[clave] = {
             'fecha': fechaStr.isNotEmpty ? fechaStr : clave,
             'ordenesCompletadas': 0,
+            'ordenesCompletadasCalidad': 0,
             'rguTotal': 0.0,
             // Desglose por tecnología
             'rguRedNeutra': 0.0,
@@ -1600,25 +1701,30 @@ class ProduccionService {
           };
         }
 
-        final rgu = (orden['rgu_total'] as num?)?.toDouble() ?? 0;
+        final oMap = orden as Map<String, dynamic>;
+        final eff = valoresEfectivosProduccionOrden(oMap, contratoAntiguoDetalle);
+        final rgu = eff.$1;
+        final ptsHfcOrd = eff.$2;
         // Usar tecnologia (HFC, FTTH, RED_NEUTRA); tipo_red_producto es crudo (CHFC, CFTT, NFTT)
         final tecno = (orden['tecnologia']?.toString().trim().isNotEmpty == true
                 ? orden['tecnologia']?.toString()
                 : null) ??
             'RED_NEUTRA';
-        final ptsHfc = (orden['puntos_hfc'] as num?)?.toDouble() ?? 0;
 
         porDia[clave]!['ordenesCompletadas'] = (porDia[clave]!['ordenesCompletadas'] as int) + 1;
-        // RGU total = suma de rgu_total de TODAS las órdenes (para que coincida con detalle)
+        if (!esDerivacionRedes(oMap)) {
+          porDia[clave]!['ordenesCompletadasCalidad'] =
+              (porDia[clave]!['ordenesCompletadasCalidad'] as int) + 1;
+        }
         porDia[clave]!['rguTotal'] = (porDia[clave]!['rguTotal'] as double) + rgu;
 
-        // Acumular por tecnología
+        // Acumular por tecnología (misma regla que obtenerResumenMesRGU)
         (porDia[clave]!['tecnologias'] as Set<String>).add(tecno);
         if (tecno.toUpperCase() == 'HFC') {
-          if (((orden['puntos_hfc'] as num?)?.toDouble() ?? 0) > 0) {
-            porDia[clave]!['ptosHfc'] = (porDia[clave]!['ptosHfc'] as double) + ((orden['puntos_hfc'] as num?)?.toDouble() ?? 0);
-          } else if (((orden['rgu_total'] as num?)?.toDouble() ?? 0) > 0) {
-            porDia[clave]!['rguFtth'] = (porDia[clave]!['rguFtth'] as double) + ((orden['rgu_total'] as num?)?.toDouble() ?? 0);
+          if (ptsHfcOrd > 0) {
+            porDia[clave]!['ptosHfc'] = (porDia[clave]!['ptosHfc'] as double) + ptsHfcOrd;
+          } else if (rgu > 0) {
+            porDia[clave]!['rguFtth'] = (porDia[clave]!['rguFtth'] as double) + rgu;
           }
         } else if (tecno.toUpperCase() == 'FTTH') {
           porDia[clave]!['rguFtth'] = (porDia[clave]!['rguFtth'] as double) + rgu;
@@ -1626,7 +1732,7 @@ class ProduccionService {
           porDia[clave]!['rguRedNeutra'] = (porDia[clave]!['rguRedNeutra'] as double) + rgu;
         }
 
-        // Agregar detalle de la orden (tecnologia = columna normalizada)
+        // Agregar detalle de la orden (valores efectivos para alinear con totales del mes)
         (porDia[clave]!['ordenes'] as List<Map<String, dynamic>>).add({
           'orden_trabajo': orden['orden_trabajo'],
           'tipo_orden': orden['tipo_orden'],
@@ -1635,7 +1741,7 @@ class ProduccionService {
           'rgu_base': (orden['rgu_base'] as num?)?.toDouble() ?? 0,
           'rgu_adicional': (orden['rgu_adicional'] as num?)?.toDouble() ?? 0,
           'rgu_total': rgu,
-          'puntos_hfc': ptsHfc,
+          'puntos_hfc': ptsHfcOrd,
           'categoria_hfc': orden['categoria_hfc']?.toString() ?? '',
           'cant_dbox': orden['cant_dbox'] ?? 0,
           'cant_extensores': orden['cant_extensores'] ?? 0,
@@ -1779,7 +1885,8 @@ class ProduccionService {
       // (evita perder datos por variaciones de casing: Completado vs COMPLETADO, etc.)
       final response = await _supabase
           .from('produccion')
-          .select('rut_tecnico, tecnico, rgu_total, fecha_trabajo, estado, area_derivacion')
+          .select(
+              'rut_tecnico, tecnico, rgu_total, puntos_hfc, fecha_trabajo, estado, area_derivacion, tecnologia, tipo_red_producto')
           .or(filtroFecha)
           .limit(10000); // Evitar truncación del default de Supabase (1000)
 
@@ -1793,13 +1900,42 @@ class ProduccionService {
         return {'ranking': <Map<String, dynamic>>[], 'totalTecnicos': 0};
       }
 
-      // Agrupar por técnico
+      final Map<String, bool> mapaContratoAntiguo = {};
+      try {
+        final tecResp = await _supabase
+            .from('tecnicos_traza_zc')
+            .select('rut, tipo_contrato')
+            .limit(8000);
+        for (final row in tecResp as List) {
+          final rutT = row['rut']?.toString() ?? '';
+          if (rutT.isEmpty) continue;
+          final ant = esContratoAntiguoTipo(row['tipo_contrato']?.toString());
+          for (final v in rutVariantes(rutT)) {
+            mapaContratoAntiguo[v] = ant;
+          }
+        }
+      } catch (_) {}
+
+      // Agrupar por técnico (REDES: volumen = RGU efectivo + pts HFC efectivos; resto: rgu_total BD)
       final Map<String, Map<String, dynamic>> porTecnico = {};
       for (var o in ordenes) {
         final rut = o['rut_tecnico']?.toString() ?? '';
         if (rut.isEmpty) continue;
         final nombre = o['tecnico']?.toString() ?? rut;
-        final rgu = (o['rgu_total'] as num?)?.toDouble() ?? 0.0;
+        var contratoAntiguo = false;
+        for (final v in rutVariantes(rut)) {
+          if (mapaContratoAntiguo.containsKey(v)) {
+            contratoAntiguo = mapaContratoAntiguo[v]!;
+            break;
+          }
+        }
+        final double volumenRanking;
+        if (esDerivacionRedes(o)) {
+          final eff = valoresEfectivosProduccionOrden(o, contratoAntiguo);
+          volumenRanking = eff.$1 + eff.$2;
+        } else {
+          volumenRanking = (o['rgu_total'] as num?)?.toDouble() ?? 0.0;
+        }
         final fecha = o['fecha_trabajo']?.toString() ?? '';
 
         if (!porTecnico.containsKey(rut)) {
@@ -1814,14 +1950,14 @@ class ProduccionService {
           };
         }
         porTecnico[rut]!['rguTotal'] =
-            (porTecnico[rut]!['rguTotal'] as double) + rgu;
+            (porTecnico[rut]!['rguTotal'] as double) + volumenRanking;
         porTecnico[rut]!['ordenes'] =
             (porTecnico[rut]!['ordenes'] as int) + 1;
         (porTecnico[rut]!['dias'] as Set<String>).add(fecha);
 
         // Acumular RGU por fecha para detectar días productivos
         final rguPorDia = porTecnico[rut]!['rguPorDia'] as Map<String, double>;
-        rguPorDia[fecha] = (rguPorDia[fecha] ?? 0.0) + rgu;
+        rguPorDia[fecha] = (rguPorDia[fecha] ?? 0.0) + volumenRanking;
       }
 
       // Calcular promedio usando solo días con RGU real (excluye días PX-0)

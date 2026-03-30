@@ -558,12 +558,12 @@ class CalidadTrazaService {
         }
       }
 
-      // 3. Combinar, ordenar (Completado primero), deduplicar y filtrar por mes
+      // 3. Combinar, deduplicar, fusionar duplicados y filtrar por mes
       final combinadas = [...(respRut as List), ...respNombre];
-      combinadas.sort((a, b) => ProduccionService.prioridadEstado(a).compareTo(ProduccionService.prioridadEstado(b)));
+      final unicas = ProduccionService.deduplicarYFusionarOrdenesProduccion(combinadas);
 
-      final Map<String, dynamic> ordenesMap = {};
-      for (var orden in combinadas) {
+      var n = 0;
+      for (var orden in unicas) {
         final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
         final partesFecha = _partirFecha(fechaStr);
         if (partesFecha == null) continue;
@@ -571,14 +571,11 @@ class CalidadTrazaService {
         var annoOrden = int.tryParse(partesFecha[2]) ?? 0;
         if (annoOrden < 100) annoOrden = 2000 + annoOrden;
         if (mesOrden != mesConsulta || annoOrden != annoConsulta) continue;
-
-        final ordenId = (orden['orden_trabajo']?.toString() ?? '').trim();
-        if (ordenId.isEmpty) continue;
-        final key = '$ordenId-$fechaStr';
-        if (!ordenesMap.containsKey(key)) ordenesMap[key] = orden;
+        if (_cuentaComoProduccion(orden) && !ProduccionService.esDerivacionRedes(orden)) {
+          n++;
+        }
       }
-
-      return ordenesMap.values.where((r) => _cuentaComoProduccion(r)).length;
+      return n;
     } catch (e) {
       print('❌ [CalidadTraza] Error total produccion: $e');
       return 0;

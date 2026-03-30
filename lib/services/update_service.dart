@@ -120,6 +120,7 @@ class UpdateService {
   /// Consulta GitHub y compara con [PackageInfo.version] (sin build).
   /// Punto de entrada único desde el arranque ([SplashScreen]); no depende del estado de auth.
   static Future<UpdateCheckResult> checkForUpdate() async {
+    print('🔄 [Update] Verificando actualización...');
     try {
       final packageInfo = await PackageInfo.fromPlatform();
       final current = packageInfo.version.trim();
@@ -175,15 +176,18 @@ class UpdateService {
       }
 
       if (!isRemoteNewerThanCurrent(tagName, current)) {
+        print('✅ [Update] App al día - versión actual: $current / remota: $tagName');
         return const UpdateCheckUpToDate();
       }
 
+      print('🆕 [Update] Nueva versión disponible: $tagName (actual: $current)');
       return UpdateCheckAvailable(
         remoteTag: tagName,
         displayVersion: tagName,
         downloadUrl: downloadUrl,
       );
     } on SocketException catch (e) {
+      print('❌ [Update] Sin conexión: $e');
       return UpdateCheckNoConnection(e);
     } on http.ClientException catch (e) {
       return UpdateCheckNoConnection(e);
@@ -196,6 +200,7 @@ class UpdateService {
     } on TimeoutException catch (e) {
       return UpdateCheckNoConnection(e);
     } catch (e) {
+      print('❌ [Update] Error inesperado: $e');
       return UpdateCheckError(e.toString());
     }
   }
