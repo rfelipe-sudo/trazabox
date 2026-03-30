@@ -24,6 +24,8 @@ import 'package:trazabox/services/auth_service.dart';
 import 'package:trazabox/services/ayuda_service.dart';
 import 'package:trazabox/services/estado_supervisor_service.dart';
 import 'package:trazabox/services/deteccion_caminata_service.dart';
+import 'package:trazabox/services/update_service.dart';
+import 'package:trazabox/widgets/update_dialog.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -140,6 +142,60 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       AyudaService().detenerMonitoreoGlobal();
       await context.read<AuthProvider>().logout();
       // AppWrapper vuelve a mostrar RegistroScreen (no usar push: se salía del wrapper).
+    }
+  }
+
+  Future<void> _buscarActualizacion() async {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
+        child: Material(
+          color: Colors.black54,
+          child: Center(
+            child: const CircularProgressIndicator(
+              color: Color(0xFF00D9FF),
+            ),
+          ),
+        ),
+      ),
+    );
+    try {
+      final result = await UpdateService.checkForUpdate();
+      if (mounted) Navigator.of(context).pop();
+      if (!mounted) return;
+
+      if (result is UpdateCheckUpToDate) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ La app está actualizada')),
+        );
+      } else if (result is UpdateCheckNoConnection) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('❌ Sin conexión a internet')),
+        );
+      } else if (result is UpdateCheckAvailable) {
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => UpdateRequiredDialog(
+            displayVersion: result.displayVersion,
+            downloadUrl: result.downloadUrl,
+          ),
+        );
+      } else if (result is UpdateCheckError) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo verificar: ${result.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo verificar: $e')),
+        );
+      }
     }
   }
 
@@ -315,7 +371,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           },
         ),
         IconButton(
+          icon: const Icon(Icons.system_update),
+          tooltip: 'Buscar actualización',
+          onPressed: _buscarActualizacion,
+        ),
+        IconButton(
           icon: const Icon(Icons.logout),
+          tooltip: 'Cerrar sesión',
           onPressed: _logout,
         ),
       ],
