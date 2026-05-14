@@ -42,6 +42,9 @@ class AppConstants {
   static const String storageKeyAlertas = 'alertas_pendientes';
   static const String storageKeyFcmToken = 'fcm_token';
   static const String storageKeyPrimerInicio = 'primer_inicio';
+
+  // Feature flags
+  static const bool monitoreoFraudeYAlertasCtoActivo = true;
 }
 
 /// Mensajes predefinidos del agente CREA

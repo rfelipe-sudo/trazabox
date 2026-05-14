@@ -140,7 +140,10 @@ enum TipoAyuda {
   zonaRoja('zona_roja'),
   crucePeligroso('cruce_peligroso'),
   ducto('ducto'),
+  ductoObstruido('ducto_obstruido'),
   fusion('fusion'),
+  necesitoFusionar('necesito_fusionar'),
+  materialFaltante('material_faltante'),
   altura('altura');
 
   final String value;
@@ -153,9 +156,13 @@ enum TipoAyuda {
       case TipoAyuda.crucePeligroso:
         return 'Cruce Peligroso';
       case TipoAyuda.ducto:
+      case TipoAyuda.ductoObstruido:
         return 'Ducto Obstruido';
       case TipoAyuda.fusion:
+      case TipoAyuda.necesitoFusionar:
         return 'Necesito Fusionar';
+      case TipoAyuda.materialFaltante:
+        return 'Material Faltante';
       case TipoAyuda.altura:
         return 'Trabajo en Altura';
     }
@@ -168,9 +175,13 @@ enum TipoAyuda {
       case TipoAyuda.crucePeligroso:
         return 'Cruce de calle o vía de alto tráfico peligroso';
       case TipoAyuda.ducto:
+      case TipoAyuda.ductoObstruido:
         return 'Ducto bloqueado u obstruido que impide el trabajo';
       case TipoAyuda.fusion:
+      case TipoAyuda.necesitoFusionar:
         return 'Necesito un técnico con equipo de fusión de fibra';
+      case TipoAyuda.materialFaltante:
+        return 'Falta material necesario para completar el trabajo';
       case TipoAyuda.altura:
         return 'Trabajo en poste o altura que requiere asistencia';
     }
@@ -179,7 +190,10 @@ enum TipoAyuda {
 
 enum EstadoSolicitud {
   pendiente('pendiente'),
+  asignada('asignada'),
   aceptada('aceptada'),
+  enCamino('en_camino'),
+  llegando('llegando'),
   rechazada('rechazada'),
   aceptadaConTiempo('aceptada_con_tiempo'),
   cancelada('cancelada'),
@@ -192,8 +206,14 @@ enum EstadoSolicitud {
     switch (this) {
       case EstadoSolicitud.pendiente:
         return 'Pendiente';
+      case EstadoSolicitud.asignada:
+        return 'Asignada';
       case EstadoSolicitud.aceptada:
         return 'Aceptada';
+      case EstadoSolicitud.enCamino:
+        return 'En camino';
+      case EstadoSolicitud.llegando:
+        return 'Llegando';
       case EstadoSolicitud.rechazada:
         return 'Rechazada';
       case EstadoSolicitud.aceptadaConTiempo:

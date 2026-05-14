@@ -1,19 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:trazabox/constants/app_colors.dart';
-import 'package:tester_red_shared/tester_red_shared.dart';
 
-/// Pantalla de Mapa de Calor - Tester de Red v2
-/// Integra el flujo completo del tester de red v2 desde el paquete compartido
+// TODO: Integrar tester_red_shared cuando el paquete esté disponible
 class MapaCalorScreen extends StatelessWidget {
   const MapaCalorScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Iniciar el flujo completo del tester de red
-    // Comienza con la selección de ONT (Askey o Huawei)
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: ONTSelectionScreen(),
+      appBar: AppBar(
+        backgroundColor: AppColors.background,
+        title: const Text('Mapa de Calor'),
+      ),
+      body: const Center(
+        child: Text(
+          'Módulo Mapa de Calor\nno disponible en esta versión',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white54),
+        ),
+      ),
     );
   }
 }

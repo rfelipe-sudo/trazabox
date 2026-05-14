@@ -895,6 +895,11 @@ class _AyudaTrackingScreenState extends State<AyudaTrackingScreen> {
         estadoIcon = Icons.cancel;
         estadoTexto = 'Solicitud cancelada';
         break;
+      default:
+        estadoColor = Colors.grey;
+        estadoIcon = Icons.help_outline;
+        estadoTexto = 'Estado desconocido';
+        break;
     }
 
     return Container(
@@ -1160,7 +1165,8 @@ class _AyudaTrackingScreenState extends State<AyudaTrackingScreen> {
 
     if (confirmar == true) {
       final ayudaService = Provider.of<AyudaService>(context, listen: false);
-      final cancelado = await ayudaService.cancelarSolicitud();
+      final ticketId = ayudaService.solicitudActual?.ticketId ?? widget.solicitud.ticketId;
+      final cancelado = await ayudaService.cancelarSolicitud(ticketId);
 
       if (context.mounted) {
         if (cancelado) {

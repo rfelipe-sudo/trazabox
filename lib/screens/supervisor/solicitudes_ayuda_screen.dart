@@ -1467,6 +1467,7 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
       EstadoSolicitud.aceptadaConTiempo => _colorNaranja,
       EstadoSolicitud.cancelada => Colors.white38,
       EstadoSolicitud.completada => _colorVerde,
+      _ => Colors.grey,
     };
   }
 
@@ -1477,6 +1478,7 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
       TipoAyuda.ducto => Icons.block,
       TipoAyuda.fusion => Icons.cable,
       TipoAyuda.altura => Icons.height,
+      _ => Icons.help_outline,
     };
   }
 
@@ -1487,6 +1489,7 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
       TipoAyuda.ducto          => _colorAmbar,
       TipoAyuda.fusion         => _colorCyan,
       TipoAyuda.altura         => _colorVerde,
+      _ => Colors.grey,
     };
   }
 

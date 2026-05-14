@@ -899,6 +899,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
         TipoAyuda.ducto => Icons.block,
         TipoAyuda.fusion => Icons.cable,
         TipoAyuda.altura => Icons.height,
+        _ => Icons.help_outline,
       };
 
   Color _colorPorTipo(TipoAyuda tipo) => switch (tipo) {
@@ -907,6 +908,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
         TipoAyuda.ducto => const Color(0xFFFFCC02),
         TipoAyuda.fusion => const Color(0xFF00C49A),
         TipoAyuda.altura => const Color(0xFF34C759),
+        _ => Colors.grey,
       };
 
   // ─────────────────────────────────────────────────────────────

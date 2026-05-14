@@ -55,7 +55,7 @@ class CalidadTecnico {
   }
 }
 
-/// Modelo para representar un detalle de reiterado desde calidad_crea
+/// Modelo para representar un detalle de reiterado desde calidad_traza
 class DetalleReiterado {
   final String ordenOriginal;
   final String fechaOriginal;

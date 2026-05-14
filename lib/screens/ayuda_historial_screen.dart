@@ -101,6 +101,10 @@ class AyudaHistorialScreen extends StatelessWidget {
         tipoIcon = Icons.cable;
         tipoColor = const Color(0xFF4CAF50);
         break;
+      default:
+        tipoIcon = Icons.help_outline;
+        tipoColor = Colors.grey;
+        break;
     }
 
     return Container(

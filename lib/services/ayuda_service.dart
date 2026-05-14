@@ -811,4 +811,57 @@ class AyudaService extends ChangeNotifier {
     // Solo limpiar canales locales.
     cancelarCanalesLocales();
   }
+
+  /// Refresca solicitudActual desde Supabase.
+  Future<void> consultarEstado() async {
+    try {
+      final id = solicitudActual?.ticketId;
+      if (id == null) return;
+      final row = await _supabase
+          .from('ayuda_terreno')
+          .select()
+          .eq('ticket_id', id)
+          .maybeSingle();
+      if (row != null) {
+        _solicitudActual = SolicitudAyuda.fromJson(row);
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('⚠️ [AyudaService] consultarEstado: $e');
+    }
+  }
+
+  /// Supervisores disponibles cercanos (por equipo del técnico).
+  Future<List<Map<String, dynamic>>> obtenerSupervisoresDisponibles({
+    double? latitud,
+    double? longitud,
+  }) async {
+    try {
+      final rutTecnico = solicitudActual?.rutTecnico ?? '';
+      if (rutTecnico.isEmpty) return [];
+      final filas = await _supabase
+          .from('supervisor_tecnicos_traza')
+          .select('rut_supervisor')
+          .eq('rut_tecnico', rutTecnico);
+      return (filas as List).map((e) => Map<String, dynamic>.from(e)).toList();
+    } catch (e) {
+      debugPrint('⚠️ [AyudaService] obtenerSupervisoresDisponibles: $e');
+      return [];
+    }
+  }
+
+
+  /// Guarda el token FCM de un supervisor en Supabase para notificaciones.
+  Future<void> guardarTokenFcmSupervisor(
+      String rutSupervisor, String token) async {
+    try {
+      await _supabase.from('supervisores_traza').upsert({
+        'rut_supervisor': rutSupervisor,
+        'fcm_token': token,
+        'updated_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'rut_supervisor');
+    } catch (e) {
+      debugPrint('⚠️ [AyudaService] guardarTokenFcmSupervisor: $e');
+    }
+  }
 }

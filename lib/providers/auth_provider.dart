@@ -210,4 +210,39 @@ class AuthProvider extends ChangeNotifier {
   Future<void> reintentar() async {
     await initialize();
   }
+
+  /// Actualiza el usuario en memoria desde SharedPreferences sin pantalla de carga.
+  Future<void> syncUsuarioDesdePrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(AppConstants.storageKeyUsuario);
+      if (jsonStr != null) {
+        _usuario = Usuario.fromJson(jsonDecode(jsonStr));
+        notifyListeners();
+      }
+    } catch (e) {
+      print('⚠️ syncUsuarioDesdePrefs: $e');
+    }
+  }
+
+  /// Invalida la sesión local (dispositivo eliminado del panel).
+  Future<void> invalidarSesionTrazabox() async {
+    try {
+      _tecnico = null;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('rut_tecnico');
+      await prefs.remove('user_rut');
+      await prefs.remove('user_nombre');
+      await prefs.remove('nombre_tecnico');
+      await prefs.remove('user_rol');
+      await prefs.remove('tipo_personal');
+      await prefs.remove(AppConstants.storageKeyUsuario);
+      _usuario = null;
+      _sesionDesbloqueada = false;
+      _registroEstado = RegistroEstado.noRegistrado;
+      notifyListeners();
+    } catch (e) {
+      print('⚠️ invalidarSesionTrazabox: $e');
+    }
+  }
 }

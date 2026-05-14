@@ -3170,5 +3170,54 @@ class ProduccionService {
       };
     }
   }
+
+  /// Fila completa de produccion para una OT concreta.
+  Future<Map<String, dynamic>?> obtenerOrdenProduccionCrea({
+    required String rutTecnico,
+    required String ordenTrabajo,
+    required String fechaTrabajo,
+  }) async {
+    try {
+      final ruts = rutVariantes(rutTecnico);
+      if (ruts.isEmpty) return null;
+      final row = await _supabase
+          .from('produccion')
+          .select()
+          .eq('orden_trabajo', ordenTrabajo)
+          .inFilter('rut_tecnico', ruts)
+          .maybeSingle();
+      return row == null ? null : Map<String, dynamic>.from(row);
+    } catch (e) {
+      print('⚠️ [Produccion] obtenerOrdenProduccionCrea: $e');
+      return null;
+    }
+  }
+
+  /// Órdenes completadas de un día para un técnico.
+  Future<List<Map<String, dynamic>>> listarOrdenesCompletadasDia({
+    required String rutTecnico,
+    required String fechaTrabajo,
+  }) async {
+    try {
+      final ruts = rutVariantes(rutTecnico);
+      if (ruts.isEmpty) return [];
+      final resp = await _supabase
+          .from('produccion')
+          .select()
+          .eq('estado', 'Completado')
+          .inFilter('rut_tecnico', ruts)
+          .eq('fecha_trabajo', fechaTrabajo);
+      final lista = (resp as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      lista.sort((a, b) => (a['hora_inicio'] ?? '')
+          .toString()
+          .compareTo((b['hora_inicio'] ?? '').toString()));
+      return lista;
+    } catch (e) {
+      print('⚠️ [Produccion] listarOrdenesCompletadasDia: $e');
+      return [];
+    }
+  }
 }
 

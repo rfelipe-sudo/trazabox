@@ -1,37 +1,61 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'package:flutter_activity_recognition/flutter_activity_recognition.dart' as activity_recognition;
 
+import 'package:trazabox/constants/app_constants.dart';
 import 'package:trazabox/constants/app_colors.dart';
 import 'package:trazabox/config/supabase_config.dart';
 import 'package:trazabox/providers/auth_provider.dart';
 import 'package:trazabox/providers/alertas_provider.dart';
+import 'package:trazabox/providers/alerta_provider.dart';
+import 'package:trazabox/services/fcm_service.dart';
 import 'package:trazabox/services/local_notification_service.dart';
 import 'package:trazabox/services/alerta_contexto_service.dart';
 import 'package:trazabox/services/churn_service.dart';
 import 'package:trazabox/services/ayuda_service.dart';
-import 'package:trazabox/services/estado_supervisor_service.dart';
+import 'package:trazabox/services/sesion_dispositivo_service.dart';
 import 'package:trazabox/services/supabase_service.dart';
 import 'package:trazabox/screens/splash_screen.dart';
+import 'package:trazabox/screens/dispositivo_bloqueado_screen.dart';
+import 'package:trazabox/screens/registro_rut_screen.dart';
 import 'package:trazabox/screens/registro_screen.dart';
 import 'package:trazabox/screens/desbloqueo_app_screen.dart';
 import 'package:trazabox/screens/home_screen.dart';
 import 'package:trazabox/screens/asistente_cto_screen.dart';
 import 'package:trazabox/screens/asistente_crea_terreno_screen.dart';
-// import 'package:trazabox/screens/mapa_calor_screen.dart'; // COMENTADO: tester_red_shared no disponible
+import 'package:trazabox/screens/mapa_calor_screen.dart';
+import 'package:trazabox/screens/wifi_mapas_screen.dart';
+import 'package:trazabox/screens/wifi_credenciales_screen.dart';
+import 'package:trazabox/screens/wifi_cobertura_screen.dart';
+import 'package:trazabox/screens/certificado_wifi_screen.dart';
 import 'package:trazabox/screens/ayuda_terreno_screen.dart';
 import 'package:trazabox/screens/speed_meter_screen.dart';
 import 'package:trazabox/screens/fiber_microscope_screen.dart';
+import 'package:trazabox/screens/mis_actividades_screen.dart';
+import 'package:trazabox/screens/finalizar_orden_screen.dart';
+import 'package:trazabox/screens/solicitud_material_screen.dart';
 import 'package:trazabox/screens/supervisor/mi_equipo_screen.dart';
+import 'package:trazabox/screens/supervisor/solicitudes_ayuda_screen.dart';
+import 'package:trazabox/screens/supervisor/mi_actividad_screen.dart';
+import 'package:trazabox/screens/supervisor/asistente_supervisor_screen.dart';
+import 'package:trazabox/screens/supervisor/auditoria_prl_screen.dart';
+import 'package:trazabox/screens/ast_workflow_screen.dart';
+import 'package:trazabox/screens/ast_login_screen.dart';
+import 'package:trazabox/services/estado_supervisor_service.dart';
+import 'package:trazabox/services/notification_service.dart';
 import 'package:trazabox/screens/bodeguero_menu_screen.dart';
 import 'package:trazabox/services/deteccion_caminata_service.dart';
 import 'package:trazabox/services/kepler_polling_service.dart';
+import 'package:trazabox/services/alertas_cto_service.dart';
 import 'package:trazabox/services/notificacion_service.dart';
 import 'package:trazabox/services/alarm_audio_service.dart';
-import 'package:trazabox/services/notification_service.dart' as notification_service;
+import 'package:trazabox/utils/session_manager.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -41,21 +65,28 @@ final supabaseService = SupabaseService();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Solo configuración síncrona mínima antes de mostrar UI
+  // LATEST renderer: soporta el parámetro style: en GoogleMap widget.
+  final mapsImpl = GoogleMapsFlutterPlatform.instance;
+  if (mapsImpl is GoogleMapsFlutterAndroid) {
+    mapsImpl.initializeWithRenderer(AndroidMapRenderer.latest);
+  }
+
+  // Firebase + FCM background handler ANTES de cualquier otra cosa async
   try {
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]);
-    SystemChrome.setSystemUIOverlayStyle(
-      const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light,
-        systemNavigationBarColor: Color(0xFF050810),
-        systemNavigationBarIconBrightness: Brightness.light,
-      ),
-    );
-  } catch (_) {}
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    await FcmService.instance.init();
+    print('✅ Firebase + FCM inicializados');
+  } catch (e) {
+    print('⚠️ [Main] Firebase no inicializado: $e');
+  }
+
+  try {
+    final notificacionService = NotificacionService();
+    await notificacionService.inicializar();
+  } catch (e) {
+    print('⚠️ [Main] Error inicializando NotificacionService: $e');
+  }
 
   // Supabase es crítico — inicializar antes de la UI
   try {
@@ -68,69 +99,141 @@ void main() async {
     print('❌ [Main] Error inicializando Supabase: $e');
   }
 
-  // Mostrar la app inmediatamente — la splash se encarga de la espera visual
-  runApp(const AgenteDesconexionesApp());
-
-  // Todo lo demás en background, no bloquea la UI
-  _inicializarServiciosEnBackground();
-}
-
-/// Inicialización no crítica que corre mientras la splash se muestra
-Future<void> _inicializarServiciosEnBackground() async {
-  // Canal de alta prioridad para Ayuda en Terreno (sonido + vibración)
   try {
-    final notifAyuda = notification_service.NotificationService();
-    await notifAyuda.init();
-  } catch (e) { print('⚠️ [Main] NotificationService Ayuda: $e'); }
+    await _solicitarPermisos();
+  } catch (e) {
+    print('⚠️ [Main] Error solicitando permisos: $e');
+  }
 
   try {
-    final notificacionService = NotificacionService();
-    await notificacionService.inicializar();
-  } catch (e) { print('⚠️ [Main] NotificacionService: $e'); }
-
-  try { await _solicitarPermisos(); } catch (_) {}
-  try { _iniciarActivityRecognition(); } catch (_) {}
-  try { await _crearCanalNotificacionDeteccion(); } catch (_) {}
+    _iniciarActivityRecognition();
+  } catch (e) {
+    print('⚠️ [Main] Error iniciando Activity Recognition: $e');
+  }
 
   try {
-    final deteccionService = DeteccionCaminataService();
-    await deteccionService.inicializar();
-  } catch (_) {}
+    await _crearCanalNotificacionDeteccion();
+  } catch (e) {
+    print('⚠️ [Main] Error creando canal de notificación: $e');
+  }
 
-  try { _configurarListenerAlertasAutomaticas(); } catch (_) {}
+  if (AppConstants.monitoreoFraudeYAlertasCtoActivo) {
+    try {
+      final deteccionService = DeteccionCaminataService();
+      await deteccionService.inicializar();
+    } catch (e) {
+      print('⚠️ [Main] Error inicializando DeteccionCaminataService: $e');
+    }
 
-  // KeplerPollingService DESACTIVADO en TrazaBox — no corresponde a esta app
-  // try {
-  //   final keplerPolling = KeplerPollingService();
-  //   await keplerPolling.iniciar();
-  // } catch (e) { print('⚠️ [Main] KeplerPolling: $e'); }
+    try {
+      _configurarListenerAlertasAutomaticas();
+    } catch (e) {
+      print('⚠️ [Main] Error configurando listeners: $e');
+    }
+
+    try {
+      final keplerPolling = KeplerPollingService();
+      await keplerPolling.iniciar();
+    } catch (e) {
+      print('⚠️ [Main] Error iniciando KeplerPollingService: $e');
+    }
+
+    try {
+      final alertasCTOService = AlertasCTOService();
+      await alertasCTOService.iniciar();
+    } catch (e) {
+      print('⚠️ [Main] Error iniciando AlertasCTOService: $e');
+    }
+  } else {
+    print('ℹ️ [Main] Monitoreo fraude / alertas CTO desactivado (AppConstants)');
+  }
+
+  try {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  } catch (e) {
+    print('⚠️ [Main] Error configurando orientación: $e');
+  }
+
+  try {
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Color(0xFF0A1628),
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+    );
+  } catch (e) {
+    print('⚠️ [Main] Error configurando estilo de barra: $e');
+  }
 
   LocalNotificationService? notificationService;
+
   try {
     notificationService = LocalNotificationService();
     await notificationService.initialize();
-  } catch (_) {}
+  } catch (e) {
+    print('⚠️ [Main] Error inicializando LocalNotificationService: $e');
+  }
 
-  try { await AlertaContextoService().initialize(); } catch (_) {}
+  try {
+    await AlertaContextoService().initialize();
+  } catch (e) {
+    print('⚠️ [Main] Error inicializando AlertaContextoService: $e');
+  }
 
   try {
     if (notificationService != null) {
-      await notificationService.cancelAllNotifications().timeout(
-        const Duration(seconds: 3), onTimeout: () {},
-      );
+      print('🔔 [Main] Cancelando todas las notificaciones pendientes...');
+      try {
+        await notificationService.cancelAllNotifications().timeout(
+          const Duration(seconds: 3),
+          onTimeout: () {
+            print('⚠️ [Main] Timeout cancelando notificaciones (continuando...)');
+          },
+        );
+        print('✅ [Main] Todas las notificaciones canceladas');
+      } catch (e) {
+        print('⚠️ [Main] Error cancelando notificaciones: $e');
+      }
     }
-    final alarmAudio = AlarmAudioService();
-    if (alarmAudio.estaReproduciendo) {
-      await alarmAudio.detenerAlarma().timeout(const Duration(seconds: 2), onTimeout: () {});
+
+    try {
+      final alarmAudio = AlarmAudioService();
+      bool estaReproduciendo = false;
+      try {
+        estaReproduciendo = alarmAudio.estaReproduciendo;
+      } catch (e) {
+        print('⚠️ [Main] Error verificando estado de alarma: $e');
+      }
+      if (estaReproduciendo) {
+        await alarmAudio.detenerAlarma().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () {
+            print('⚠️ [Main] Timeout deteniendo alarma (continuando...)');
+          },
+        );
+      }
+    } catch (e) {
+      print('⚠️ [Main] Error deteniendo alarma: $e');
     }
-  } catch (_) {}
+  } catch (e) {
+    print('❌ [Main] Error crítico limpiando estado al iniciar: $e');
+  }
 
   try {
-    final ayudaService = AyudaService();
-    // cargarHistorial migrado a Supabase Realtime — se carga al abrir pantalla
-  } catch (_) {}
+    await NotificationService().init();
+  } catch (e) {
+    print('⚠️ [Main] NotificationService Ayuda: $e');
+  }
 
-  print('✅ [Main] Servicios en background inicializados');
+  print('✅ [Main] Inicialización completada - Iniciando app...');
+  await SessionManager.init();
+  SesionDispositivoService.marcarInicioApp();
+  runApp(const TrazaBoxApp());
 }
 
 /// Inicializar Activity Recognition en el main isolate
@@ -141,7 +244,6 @@ void _iniciarActivityRecognition() {
     activityRecognition.activityStream.listen((activity) {
       print('🏃 [Main] Actividad detectada: ${activity.type}');
 
-      // Enviar al background service
       FlutterBackgroundService().invoke('actividadDetectada', {
         'tipo': activity.type.toString(),
         'confianza': activity.confidence.toString(),
@@ -160,9 +262,9 @@ void _iniciarActivityRecognition() {
 /// Crear canal de notificación para el servicio de detección
 Future<void> _crearCanalNotificacionDeteccion() async {
   try {
-    final FlutterLocalNotificationsPlugin notifications = 
+    final FlutterLocalNotificationsPlugin notifications =
         FlutterLocalNotificationsPlugin();
-    
+
     const androidChannel = AndroidNotificationChannel(
       'deteccion_caminata',
       'Monitoreo de Actividad',
@@ -174,7 +276,7 @@ Future<void> _crearCanalNotificacionDeteccion() async {
 
     final androidImplementation = notifications.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    
+
     if (androidImplementation != null) {
       await androidImplementation.createNotificationChannel(androidChannel);
       print('✅ Canal de notificación creado: deteccion_caminata');
@@ -189,10 +291,9 @@ Future<void> _solicitarPermisos() async {
   try {
     final activityRecognition = activity_recognition.FlutterActivityRecognition.instance;
     final permission = await activityRecognition.checkPermission();
-    
-    // Verificar si el permiso está otorgado
+
     final statusString = permission.toString();
-    if (statusString.contains('DENIED') || 
+    if (statusString.contains('DENIED') ||
         statusString.contains('denied') ||
         statusString.contains('NOT_DETERMINED')) {
       await activityRecognition.requestPermission();
@@ -207,9 +308,6 @@ Future<void> _solicitarPermisos() async {
 void _configurarListenerAlertasAutomaticas() {
   final service = FlutterBackgroundService();
 
-  // ─────────────────────────────────────────────────────────
-  // ALERTA: No se bajó de la camioneta (5 min)
-  // ─────────────────────────────────────────────────────────
   service.on('alertaAutomatica').listen((data) async {
     if (data == null) return;
     print('🚨 [Main] Alerta: Técnico no se bajó');
@@ -227,9 +325,6 @@ void _configurarListenerAlertasAutomaticas() {
     );
   });
 
-  // ─────────────────────────────────────────────────────────
-  // ALERTA: Fuera de rango (>200m)
-  // ─────────────────────────────────────────────────────────
   service.on('alertaFueraDeRango').listen((data) async {
     if (data == null) return;
     print('🚨 [Main] Alerta: Técnico fuera de rango');
@@ -247,9 +342,6 @@ void _configurarListenerAlertasAutomaticas() {
     );
   });
 
-  // ─────────────────────────────────────────────────────────
-  // ALERTA: En movimiento (>20 km/h)
-  // ─────────────────────────────────────────────────────────
   service.on('alertaEnMovimiento').listen((data) async {
     if (data == null) return;
     print('🚨 [Main] Alerta: Técnico en movimiento');
@@ -270,8 +362,8 @@ void _configurarListenerAlertasAutomaticas() {
   print('✅ Listeners de alertas configurados (no_se_bajo, fuera_de_rango, en_movimiento)');
 }
 
-class AgenteDesconexionesApp extends StatelessWidget {
-  const AgenteDesconexionesApp({super.key});
+class TrazaBoxApp extends StatelessWidget {
+  const TrazaBoxApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -279,43 +371,162 @@ class AgenteDesconexionesApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()..initialize()),
         ChangeNotifierProvider(create: (_) => AlertasProvider()),
+        ChangeNotifierProvider<AlertaProvider>(
+          create: (_) {
+            final p = AlertaProvider()..initialize();
+            FcmService.instance.setAlertaProvider(p);
+            return p;
+          },
+        ),
         ChangeNotifierProvider(create: (_) => ChurnService()),
         ChangeNotifierProvider(create: (_) => AyudaService()),
         ChangeNotifierProvider(create: (_) => EstadoSupervisorService()),
       ],
       child: MaterialApp(
-        title: 'Agente de Desconexiones',
+        navigatorKey: trazaboxNavigatorKey,
+        navigatorObservers: [TrazaboxSesionNavigatorObserver()],
+        title: 'TRAZABOX',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme,
-        // Siempre arranca en splash (verificación de actualización); nunca en Home ni AppWrapper.
-        // El técnico autenticado en prefs también pasa primero por [SplashScreen].
-        initialRoute: SplashScreen.routeName,
+        home: const SplashScreen(),
+        builder: (context, child) =>
+            _TrazaboxSesionLifecycleGuard(child: child ?? const SizedBox.shrink()),
         routes: {
-          SplashScreen.routeName: (context) => const SplashScreen(),
+          '/login': (context) => const RegistroRutScreen(),
+          '/registro_rut': (context) => const RegistroRutScreen(),
+          '/registro': (context) => const RegistroScreen(),
+          '/dispositivo_bloqueado': (context) {
+            final args = ModalRoute.of(context)?.settings.arguments;
+            var estado = 'bloqueado';
+            var mensaje = '';
+            if (args is Map) {
+              estado = args['estado']?.toString() ?? estado;
+              mensaje = args['mensaje']?.toString() ?? '';
+            }
+            return DispositivoBloqueadoScreen(estado: estado, mensaje: mensaje);
+          },
+          '/desbloqueo': (context) => const DesbloqueoAppScreen(),
           '/home': (context) => const AppWrapper(),
           '/asistente-cto': (context) => const AsistenteCtoScreen(),
           '/asistente-crea-terreno': (context) => const AsistenteCreaTerrenoScreen(),
-          // '/mapa-calor': (context) => const MapaCalorScreen(), // COMENTADO: tester_red_shared no disponible
+          '/mapa-calor': (context) => const MapaCalorScreen(),
+          '/wifi-mapas': (context) => const WifiMapasScreen(),
+          '/wifi-credenciales': (context) => const WifiCredencialesScreen(),
+          '/wifi-cobertura': (context) => const WifiCoberturaScreen(),
+          '/certificado-wifi': (context) {
+            final args = ModalRoute.of(context)?.settings.arguments;
+            final html = args is String ? args : null;
+            return CertificadoWifiScreen(htmlOverride: html);
+          },
           '/ayuda-terreno': (context) => const AyudaTerrenoScreen(),
           '/speed-meter': (context) => const SpeedMeterScreen(),
           '/microscope': (context) => const FiberMicroscopeScreen(),
+          '/mis-actividades': (context) => const MisActividadesScreen(),
+          '/finalizar-orden': (context) => const FinalizarOrdenScreen(),
+          '/solicitud-material': (context) => const SolicitudMaterialScreen(),
           '/supervisor-equipo': (context) => const MiEquipoScreen(),
+          '/asistente-supervisor': (context) => const AsistenteSupervisorScreen(),
+          '/auditoria-prl': (context) => const AuditoriaPrlScreen(),
+          '/solicitudes-ayuda': (context) => const SolicitudesAyudaScreen(),
+          '/mi-actividad': (context) => const MiActividadScreen(),
+          '/ast': (context) => const AstLoginScreen(),
         },
       ),
     );
   }
 }
 
-/// Función helper para obtener rol desde SharedPreferences
+/// Resume + timer: verifica en panel si el dispositivo sigue habilitado.
+class _TrazaboxSesionLifecycleGuard extends StatefulWidget {
+  const _TrazaboxSesionLifecycleGuard({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_TrazaboxSesionLifecycleGuard> createState() =>
+      _TrazaboxSesionLifecycleGuardState();
+}
+
+class _TrazaboxSesionLifecycleGuardState extends State<_TrazaboxSesionLifecycleGuard>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    SesionDispositivoService.iniciarTimerPeriodico();
+  }
+
+  @override
+  void dispose() {
+    SesionDispositivoService.detenerTimerPeriodico();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      SesionDispositivoService.verificarSiCorresponde();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// Rol de navegación (bodeguero / supervisor / técnico) desde prefs TRAZABOX.
 Future<String> _getRolUsuario() async {
   try {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('user_rol') ??
-        prefs.getString('rol_usuario') ??
-        'tecnico';
+    await SessionManager.init();
+    return await SessionManager.getRol();
   } catch (e) {
     print('Error obteniendo rol: $e');
     return 'tecnico';
+  }
+}
+
+/// Pantalla principal según [rol_usuario] — Future estable para no parpadear.
+class _AppHomeByRol extends StatefulWidget {
+  const _AppHomeByRol();
+
+  @override
+  State<_AppHomeByRol> createState() => _AppHomeByRolState();
+}
+
+class _AppHomeByRolState extends State<_AppHomeByRol> {
+  late final Future<String> _rolFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _rolFuture = _getRolUsuario();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: _rolFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF0A1628),
+            body: Center(
+              child: CircularProgressIndicator(color: Color(0xFF00D9FF)),
+            ),
+          );
+        }
+
+        final rol = snapshot.data ?? 'tecnico';
+
+        if (rol == 'bodeguero') {
+          return const BodegueroMenuScreen();
+        }
+        if (rol == 'supervisor') {
+          return const AsistenteSupervisorScreen(esRaiz: true);
+        }
+        return const HomeScreen();
+      },
+    );
   }
 }
 
@@ -327,7 +538,6 @@ class AppWrapper extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<AuthProvider>(
       builder: (context, auth, _) {
-        // Mostrar loading mientras se verifica registro
         if (auth.isLoading) {
           return Scaffold(
             backgroundColor: const Color(0xFF0A1628),
@@ -335,7 +545,6 @@ class AppWrapper extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Logo animado
                   Container(
                     width: 80,
                     height: 80,
@@ -373,8 +582,7 @@ class AppWrapper extends StatelessWidget {
             ),
           );
         }
-        
-        // Error al verificar
+
         if (auth.registroEstado == RegistroEstado.error) {
           return Scaffold(
             backgroundColor: const Color(0xFF0A1628),
@@ -427,44 +635,22 @@ class AppWrapper extends StatelessWidget {
             ),
           );
         }
-        
-        // Dispositivo no registrado -> Pantalla de registro
+
+        // Sin registro → pantalla de registro por RUT
         if (auth.necesitaRegistro) {
-          return const RegistroScreen();
+          return const RegistroRutScreen();
         }
 
-        // Dispositivo registrado pero falta validar contraseña en esta sesión
+        // Registrado pero falta desbloquear sesión
         if (auth.isAuthenticated && auth.requiereDesbloqueoSesion) {
           return const DesbloqueoAppScreen();
         }
-        
-        // Dispositivo registrado -> Navegar según rol
-        if (auth.isAuthenticated) {
-          return FutureBuilder<String>(
-            future: _getRolUsuario(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Scaffold(
-                  backgroundColor: Color(0xFF0A1628),
-                  body: Center(child: CircularProgressIndicator(color: Color(0xFF00D9FF))),
-                );
-              }
-              
-              final rol = snapshot.data ?? 'tecnico';
-              
-              // Bodegueros van a BodegueroMenuScreen
-              if (rol == 'bodeguero') {
-                return const BodegueroMenuScreen();
-              }
 
-              // Supervisores, ITO y técnicos: inicio en Home (Mi Equipo desde el botón del home).
-              return const HomeScreen();
-            },
-          );
+        if (auth.isAuthenticated) {
+          return const _AppHomeByRol();
         }
-        
-        // Fallback a registro
-        return const RegistroScreen();
+
+        return const RegistroRutScreen();
       },
     );
   }
