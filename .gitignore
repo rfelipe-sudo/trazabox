@@ -56,6 +56,11 @@ unlinked_spec.ds
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
 *.jks
+**/android/app/google-services.json
+
+# macOS
+.DS_Store
+**/.DS_Store
 
 # iOS/XCode related
 **/ios/**/*.mode1v3

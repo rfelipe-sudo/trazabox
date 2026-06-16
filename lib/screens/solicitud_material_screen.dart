@@ -304,15 +304,41 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
       _suscribirSolicitudPropia();
       _actualizarMarkers();
 
-      // Notificar técnicos cercanos con stock (background)
-      debugPrint('🔵 [SolicitudMat] lanzando notificarDestinatarios en background...');
-      _service.notificarDestinatarios(
-        solicitudId:    sol.id,
-        tipoMaterial:   sol.tipoMaterial,
+      debugPrint('🔵 [SolicitudMat] notificarDestinatarios (5 km)…');
+      final resultadoRadio = await _service.notificarDestinatarios(
+        solicitudId: sol.id,
+        tipoMaterial: sol.tipoMaterial,
         latSolicitante: sol.latSolicitante,
         lngSolicitante: sol.lngSolicitante,
         rutSolicitante: _rut!,
+        soloRadio5Km: true,
       );
+
+      if (!mounted) return;
+
+      if (resultadoRadio.sinDestinatarios && resultadoRadio.keplerDisponible) {
+        final ampliar = await _ofrecerAmpliarBusquedaMaterial();
+        if (!mounted) return;
+        if (ampliar) {
+          final resultadoPlantel = await _service.notificarDestinatarios(
+            solicitudId: sol.id,
+            tipoMaterial: sol.tipoMaterial,
+            latSolicitante: sol.latSolicitante,
+            lngSolicitante: sol.lngSolicitante,
+            rutSolicitante: _rut!,
+            soloRadio5Km: false,
+          );
+          if (!mounted) return;
+          if (resultadoPlantel.cantidad > 0) {
+            _snack(
+              'Solicitud enviada a ${resultadoPlantel.cantidad} '
+              'técnico${resultadoPlantel.cantidad == 1 ? '' : 's'} del plantel',
+            );
+          } else {
+            _snack('No hay técnicos con stock disponible en el plantel');
+          }
+        }
+      }
 
       // Alerta de 10 minutos si nadie responde
       _timer10min?.cancel();
@@ -324,6 +350,35 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
       setState(() => _enviando = false);
       _snack('Error al enviar: $e');
     }
+  }
+
+  Future<bool> _ofrecerAmpliarBusquedaMaterial() async {
+    final ampliar = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A2332),
+        title: const Text(
+          'Sin técnicos cercanos',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: const Text(
+          'No encontramos técnicos con stock en 5 km.\n\n¿Ampliar la búsqueda al plantel?',
+          style: TextStyle(color: Colors.white70, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No, esperar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Ampliar búsqueda'),
+          ),
+        ],
+      ),
+    );
+    return ampliar == true;
   }
 
   Future<void> _mostrarAlertaSinRespuesta(SolicitudMaterial sol) async {

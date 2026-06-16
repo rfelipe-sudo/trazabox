@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -58,6 +60,7 @@ import 'package:trazabox/services/alarm_audio_service.dart';
 import 'package:trazabox/utils/session_manager.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Helper para acceder a Supabase desde cualquier lugar
 final supabaseService = SupabaseService();
@@ -467,6 +470,7 @@ class _TrazaboxSesionLifecycleGuardState extends State<_TrazaboxSesionLifecycleG
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       SesionDispositivoService.verificarSiCorresponde();
+      unawaited(FcmService.instance.onAppResumed());
     }
   }
 
@@ -519,11 +523,28 @@ class _AppHomeByRolState extends State<_AppHomeByRol> {
         final rol = snapshot.data ?? 'tecnico';
 
         if (rol == 'bodeguero') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            unawaited(FcmService.instance.syncFcmTokenDispositivo());
+            unawaited(FcmService.instance.initBodegaGuiaMonitor());
+            unawaited(FcmService.instance.initBodegaTraspasoMonitor());
+          });
           return const BodegueroMenuScreen();
         }
         if (rol == 'supervisor') {
+          WidgetsBinding.instance.addPostFrameCallback((_) async {
+            unawaited(FcmService.instance.syncFcmTokenDispositivo());
+            unawaited(FcmService.instance.initSupervisorAyudaMonitor());
+            final rut = await AyudaService.resolverRutSupervisorSesion();
+            if (rut.isNotEmpty) {
+              unawaited(AyudaService().iniciarMonitoreoGlobalSupervisor(rut));
+            }
+          });
           return const AsistenteSupervisorScreen(esRaiz: true);
         }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          unawaited(FcmService.instance.syncFcmTokenDispositivo());
+          unawaited(FcmService.instance.initSolicitudMonitor());
+        });
         return const HomeScreen();
       },
     );

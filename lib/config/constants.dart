@@ -15,6 +15,11 @@ const String kKeplerRegisterTokenPath = '/api/v1/toa/devices/register-token';
 // Plataforma única por ahora
 const String kFcmPlatform = 'android';
 
+// Material — radio geográfico de destinatarios
+const bool kMaterialFiltroDistanciaActivo = true;
+const double kMaterialRadioKm = 5.0;
+const int kMaterialGpsMaxAntiguedadMinutos = 10;
+
 // Llaves de SharedPreferences
 const String kPrefFcmTokenRegistrado = 'fcm_token_registrado';
 const String kPrefAlertaBloqueoMisActividades = 'alerta_activa_mis_actividades';

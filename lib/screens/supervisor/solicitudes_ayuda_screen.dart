@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 import 'package:trazabox/models/solicitud_ayuda.dart';
 import 'package:trazabox/services/ayuda_service.dart';
+import 'package:trazabox/services/ayuda_alerta_estado.dart';
 import 'package:trazabox/services/estado_supervisor_service.dart';
 
 class SolicitudesAyudaScreen extends StatefulWidget {
@@ -73,9 +74,7 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
   Future<void> _iniciar() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _rutSupervisor = prefs.getString('rut_supervisor') ??
-          prefs.getString('rut_tecnico') ??
-          prefs.getString('user_rut') ?? '';
+      _rutSupervisor = await AyudaService.resolverRutSupervisorSesion();
       _nombreSupervisor = prefs.getString('nombre_supervisor') ??
           prefs.getString('user_nombre') ?? '';
 
@@ -265,6 +264,7 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
     });
 
     try {
+      final umbralCarga = DateTime.now();
       await _ayudaService
           .cargarSolicitudesSupervisor(_rutSupervisor!)
           .timeout(const Duration(seconds: 15));
@@ -275,12 +275,13 @@ class _SolicitudesAyudaScreenState extends State<SolicitudesAyudaScreen> {
           _solicitudes = lista;
           _cargando = false;
         });
-        // Reproducir alerta si hay pendientes al cargar
-        final hayPendientes =
-            lista.any((s) => s.estado == EstadoSolicitud.pendiente);
-        if (hayPendientes) {
-          _ayudaService.reproducirAlerta().catchError((_) {});
-        }
+        final pendientesPrevias = lista.where((s) =>
+            s.estado == EstadoSolicitud.pendiente &&
+            !s.fechaCreacion.isAfter(umbralCarga));
+        await _ayudaService.detenerAlerta();
+        await AyudaAlertaEstado.markAllSeen(
+          pendientesPrevias.map((s) => s.ticketId),
+        );
         // Registrar tickets aceptados para tracking de GPS
         final estadoSvc = EstadoSupervisorService();
         for (final s in lista) {

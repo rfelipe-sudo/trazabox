@@ -1503,8 +1503,8 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
               ),
             ],
 
-            // Botón cancelar (solo cuando pendiente)
-            if (esPendiente) ...[
+            // Cancelar: disponible mientras la solicitud siga activa
+            if (s.estaActiva) ...[
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
@@ -1513,8 +1513,8 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
                   icon: const Icon(Icons.close, size: 16),
                   label: const Text('Cancelar solicitud'),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.grey.shade600,
-                    side: BorderSide(color: Colors.grey.shade300),
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade200),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10)),

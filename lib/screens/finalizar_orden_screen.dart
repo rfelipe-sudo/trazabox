@@ -22,7 +22,7 @@ class FinalizarOrdenScreen extends StatefulWidget {
 
 class _FinalizarOrdenScreenState extends State<FinalizarOrdenScreen> {
   static const _channel = MethodChannel(
-    'com.creacionestecnologicas.agente_desconexiones/app_launcher',
+    'com.traza.trazabox/app_launcher',
   );
 
   bool _verificando = true;

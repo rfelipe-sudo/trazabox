@@ -141,6 +141,7 @@ flutter:
     - assets/images/
     - assets/icons/
     - assets/logo/
+    - assets/apk/
 
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN DE ICONO DE LA APP

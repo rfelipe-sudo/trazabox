@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:trazabox/models/solicitud_ayuda.dart';
 import 'package:trazabox/services/estado_supervisor_service.dart';
 import 'package:trazabox/services/notification_service.dart';
+import 'package:trazabox/services/fcm_service.dart';
 
 /// Servicio de Ayuda en Terreno con Supabase Realtime.
 /// Singleton — una sola instancia por toda la sesión de la app.
@@ -17,7 +18,24 @@ class AyudaService extends ChangeNotifier {
   static final AyudaService _instance = AyudaService._internal();
   factory AyudaService() => _instance;
   AyudaService._internal();
-  // ─────────────────────────────────────────────────────────
+
+  /// Compara RUTs ignorando puntos, guiones y mayúsculas.
+  static bool mismoRut(String? a, String? b) {
+    if (a == null || b == null) return false;
+    String norm(String r) =>
+        r.toUpperCase().replaceAll('.', '').replaceAll('-', '').trim();
+    return norm(a) == norm(b);
+  }
+
+  /// RUT del supervisor en sesión (prefs unificados).
+  static Future<String> resolverRutSupervisorSesion() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('rut_supervisor') ??
+        prefs.getString('rut_tecnico') ??
+        prefs.getString('user_rut') ??
+        prefs.getString('rut') ??
+        '';
+  }
 
   final _supabase = Supabase.instance.client;
   final _player = AudioPlayer();
@@ -206,6 +224,13 @@ class AyudaService extends ChangeNotifier {
   /// Usa just_audio + vibración. No muestra notificación del sistema
   /// para no duplicar cuando ya hay cards pendientes en pantalla.
   Future<void> reproducirAlerta() => _reproducirSonido();
+
+  Future<void> detenerAlerta() async {
+    try {
+      if (_player.playing) await _player.stop();
+    } catch (_) {}
+    await FcmService.stopAlerta();
+  }
 
   /// Recupera un ticket activo desde Supabase por su ticket_id
   Future<SolicitudAyuda?> obtenerSolicitudPorTicket(String ticketId) async {

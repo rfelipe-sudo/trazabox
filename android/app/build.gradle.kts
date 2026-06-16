@@ -1,8 +1,23 @@
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+import java.util.Properties
+
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn(
+        "google-services.json no encontrado en android/app/. " +
+            "Firebase / FCM quedarán deshabilitados en este build.",
+    )
+}
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) load(f.inputStream())
 }
 
 android {
@@ -11,7 +26,6 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        // Habilitar desugaring para flutter_local_notifications
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -23,12 +37,10 @@ android {
 
     defaultConfig {
         applicationId = "com.traza.trazabox"
-        minSdk = 29  // Mínimo requerido para pedometer_2 y otras dependencias
+        minSdk = 29
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        
-        // Requerido para desugaring
         multiDexEnabled = true
     }
 
@@ -36,6 +48,22 @@ android {
         release {
             signingConfig = signingConfigs.getByName("debug")
         }
+        forEach {
+            it.buildConfigField("String", "NYQUIST_USER", "\"${localProps.getProperty("nyquist.user", "")}\"")
+            it.buildConfigField("String", "NYQUIST_PASS", "\"${localProps.getProperty("nyquist.pass", "")}\"")
+            it.buildConfigField("String", "S3_ACCESS_KEY", "\"${localProps.getProperty("s3.access_key", "")}\"")
+            it.buildConfigField("String", "S3_SECRET_KEY", "\"${localProps.getProperty("s3.secret_key", "")}\"")
+            it.buildConfigField("String", "S3_BUCKET", "\"${localProps.getProperty("s3.bucket", "")}\"")
+            it.buildConfigField("String", "S3_REGION", "\"${localProps.getProperty("s3.region", "us-east-1")}\"")
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    aaptOptions {
+        noCompress("onnx", "onnx.data", "apk")
     }
 }
 
@@ -44,6 +72,23 @@ flutter {
 }
 
 dependencies {
-    // Core library desugaring
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    implementation("androidx.multidex:multidex:2.0.1")
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("com.amazonaws:aws-android-sdk-core:2.77.0")
+    implementation("com.amazonaws:aws-android-sdk-s3:2.77.0")
+    implementation("com.google.guava:guava:32.1.3-android")
 }

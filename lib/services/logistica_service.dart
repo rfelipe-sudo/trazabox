@@ -21,6 +21,18 @@ class TecnicoStock {
 class LogisticaService {
   static const _url = 'https://logistica.sbip.cl/api/get_all_saldo';
 
+  static String normalizeRutKey(String rut) =>
+      rut.replaceAll(RegExp(r'[.\-\s]'), '').toUpperCase();
+
+  static String canonicalRut(String rut) {
+    final k = normalizeRutKey(rut);
+    if (k.length < 2) return rut.trim();
+    return '${k.substring(0, k.length - 1)}-${k.substring(k.length - 1)}';
+  }
+
+  static bool sameRut(String a, String b) =>
+      normalizeRutKey(a) == normalizeRutKey(b);
+
   // ── Categorización ──────────────────────────────────────────
   // Mapea el nombre del ERP → categoría de kMateriales.
   // Retorna null si no pertenece a ninguna categoría relevante.

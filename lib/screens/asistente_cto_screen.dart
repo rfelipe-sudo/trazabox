@@ -104,7 +104,7 @@ class _AsistenteCtoScreenState extends State<AsistenteCtoScreen> {
   Map<String, String> _estadosHoy = {};
 
   static const _ctoChannel = MethodChannel(
-    'com.creacionestecnologicas.agente_desconexiones/cto_scan',
+    'com.traza.trazabox/cto_scan',
   );
 
   @override
