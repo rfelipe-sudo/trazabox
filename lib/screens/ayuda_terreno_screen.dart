@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:trazabox/models/solicitud_ayuda.dart';
 import 'package:trazabox/services/ayuda_service.dart';
+import 'package:trazabox/services/fcm_service.dart';
 
 // ═════════════════════════════════════════════════════════════
 // Pantalla principal de Ayuda en Terreno
@@ -50,6 +51,10 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
   // Iconos personalizados para el mapa
   BitmapDescriptor? _iconoTecnico;
   BitmapDescriptor? _iconoSupervisor;
+  BitmapDescriptor? _iconoSupervisorZona; // naranja — disponibles pero sin asignar
+
+  // Supervisores de la zona visibles mientras la solicitud está pendiente
+  List<Map<String, dynamic>> _supervisoresZona = [];
 
   // ─────────────────────────────────────────────────────────────
   // Ciclo de vida
@@ -94,6 +99,10 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
       _iconoSupervisor = await _buildCircleMarker(
         color: const Color(0xFF4CAF50),
         tamano: 90,
+      );
+      _iconoSupervisorZona = await _buildCircleMarker(
+        color: const Color(0xFFFF9500),
+        tamano: 80,
       );
       if (mounted) setState(() {});
     } catch (_) {}
@@ -201,6 +210,9 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
     _iniciarTimerEspera();
     _iniciarTimerGps(solicitud.ticketId);
     _actualizarMarkers(solicitud);
+    if (solicitud.estado == EstadoSolicitud.pendiente) {
+      _cargarSupervisoresZona();
+    }
   }
 
   Future<void> _verificarEstadoTicket(String ticketId) async {
@@ -221,7 +233,10 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
     // Supervisor acaba de aceptar → mostrar banner pero mantener tracking activo
     if (solicitud.supervisorEnCamino &&
         estadoAnterior == EstadoSolicitud.pendiente) {
-      setState(() => _solicitudActiva = solicitud);
+      setState(() {
+        _solicitudActiva = solicitud;
+        _supervisoresZona = []; // ya hay supervisor asignado, limpiar zona
+      });
       _actualizarMarkers(solicitud);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -250,16 +265,29 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
     }
   }
 
-  // Polling cada 30s para refrescar GPS del supervisor en Supabase
+  // Polling cada 10s para refrescar GPS del supervisor en Supabase
   void _iniciarTimerGps(String ticketId) {
     _timerGps?.cancel();
-    _timerGps = Timer.periodic(const Duration(seconds: 30), (_) async {
+    _timerGps = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!mounted) {
         _timerGps?.cancel();
         return;
       }
       await _verificarEstadoTicket(ticketId);
+      // Mientras pendiente, refrescar posición de los supervisores de la zona
+      if (mounted && _solicitudActiva?.estado == EstadoSolicitud.pendiente) {
+        await _cargarSupervisoresZona();
+      }
     });
+  }
+
+  Future<void> _cargarSupervisoresZona() async {
+    if (_rutUsuario == null || _rutUsuario!.isEmpty) return;
+    final lista =
+        await _ayudaService.obtenerSupervisoresZonaConGps(_rutUsuario!);
+    if (!mounted) return;
+    setState(() => _supervisoresZona = lista);
+    if (_solicitudActiva != null) _actualizarMarkers(_solicitudActiva!);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -311,6 +339,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
       _iniciarTimerEspera();
       _iniciarTimerGps(solicitud.ticketId);
       _actualizarMarkers(solicitud);
+      _cargarSupervisoresZona();
     }
   }
 
@@ -320,6 +349,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
       onSonido: () {
         if (mounted) {
           HapticFeedback.heavyImpact();
+          unawaited(FcmService.playAyuda());
           _mostrarDialogoRespuesta();
         }
       },
@@ -400,9 +430,32 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
       _distanciaActual = null;
       _etaMinutos = null;
       _polylines.clear();
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(LatLng(s.latTecnico, s.lngTecnico), 14),
-      );
+
+      // Solo marcadores para supervisores que tienen GPS registrado
+      final conGps = _supervisoresZona
+          .where((x) => x['lat'] != null && x['lng'] != null)
+          .toList();
+      for (final sup in conGps) {
+        _markers.add(Marker(
+          markerId: MarkerId('zona_${sup['rut']}'),
+          position: LatLng(sup['lat'] as double, sup['lng'] as double),
+          icon: _iconoSupervisorZona ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: InfoWindow(
+            title: '👤 ${sup['nombre']}',
+            snippet: 'Supervisor disponible en tu zona',
+          ),
+        ));
+      }
+
+      if (conGps.isNotEmpty) {
+        _ajustarCamaraZona(s);
+      } else {
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(LatLng(s.latTecnico, s.lngTecnico), 14),
+        );
+      }
     }
 
     if (mounted) setState(() {});
@@ -497,6 +550,29 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
     return points;
   }
 
+  void _ajustarCamaraZona(SolicitudAyuda s) {
+    final conGps = _supervisoresZona
+        .where((x) => x['lat'] != null && x['lng'] != null)
+        .toList();
+    if (conGps.isEmpty) return;
+    final lats = [
+      s.latTecnico,
+      ...conGps.map((x) => x['lat'] as double),
+    ];
+    final lngs = [
+      s.lngTecnico,
+      ...conGps.map((x) => x['lng'] as double),
+    ];
+    final sw = LatLng(lats.reduce(math.min), lngs.reduce(math.min));
+    final ne = LatLng(lats.reduce(math.max), lngs.reduce(math.max));
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(southwest: sw, northeast: ne),
+        80,
+      ),
+    );
+  }
+
   void _ajustarCamaraAmbos(SolicitudAyuda s) {
     if (s.latSupervisor == null) return;
     final sw = LatLng(
@@ -536,6 +612,13 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
     return '${minutos ~/ 60}h ${minutos % 60}m';
   }
 
+  String _formatMinutos(int minutos) {
+    if (minutos < 60) return '$minutos min';
+    final h = minutos ~/ 60;
+    final m = minutos % 60;
+    return m == 0 ? '${h}h' : '${h}h ${m}min';
+  }
+
   // ─────────────────────────────────────────────────────────────
   // Diálogos
   // ─────────────────────────────────────────────────────────────
@@ -569,7 +652,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
           Icons.schedule,
           'Aceptada con demora',
           s.tiempoExtraMinutos != null
-              ? '${s.supervisorNombre ?? "El supervisor"} llegará en ~${s.tiempoExtraMinutos} min adicionales.'
+              ? '${s.supervisorNombre ?? "El supervisor"} llegará en ~${_formatMinutos(s.tiempoExtraMinutos!)} adicionales.'
               : '${s.supervisorNombre ?? "El supervisor"} aceptó con demora.',
         ),
       _ => (
@@ -802,6 +885,12 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
   }
 
   Future<void> _confirmarCancelar() async {
+    final s = _solicitudActiva;
+    final supervisorEnCamino = s != null &&
+        (s.estado == EstadoSolicitud.aceptada ||
+            s.estado == EstadoSolicitud.aceptadaConTiempo);
+    final nombreSup = s?.supervisorNombre;
+
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -810,9 +899,13 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Cancelar solicitud',
             style: TextStyle(color: Colors.black87, fontSize: 16)),
-        content: const Text(
-          '¿Ya resolviste el problema o no necesitas ayuda?\nEsto cerrará la solicitud activa.',
-          style: TextStyle(color: Colors.black54, height: 1.4),
+        content: Text(
+          supervisorEnCamino
+              ? '${nombreSup ?? "El supervisor"} ya fue notificado y puede estar en camino.\n\n'
+                  '¿Confirmas que ya no necesitas ayuda? Se avisará al supervisor.'
+              : '¿Ya resolviste el problema o no necesitas ayuda?\n'
+                  'Esto cerrará la solicitud activa y avisará al supervisor.',
+          style: const TextStyle(color: Colors.black54, height: 1.4),
         ),
         actions: [
           TextButton(
@@ -870,6 +963,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
         _etaMinutos = null;
         _supervisorLlego = false;
         _segundosEspera = 0;
+        _supervisoresZona = [];
       });
     }
   }
@@ -1410,7 +1504,7 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
                             Icon(Icons.schedule,
                                 size: 13, color: Colors.orange.shade600),
                             const SizedBox(width: 4),
-                            Text('Llegará en ~${s.tiempoExtraMinutos} min extra',
+                            Text('Llegará en ~${_formatMinutos(s.tiempoExtraMinutos!)} extra',
                                 style: TextStyle(
                                     color: Colors.orange.shade700,
                                     fontSize: 12)),
@@ -1501,6 +1595,74 @@ class _AyudaTerrenoScreenState extends State<AyudaTerrenoScreen>
                   ),
                 ],
               ),
+              if (esPendiente && _supervisoresZona.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Supervisores en tu zona',
+                    style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: _supervisoresZona.map((sup) {
+                    final tieneGps =
+                        sup['lat'] != null && sup['lng'] != null;
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: tieneGps
+                            ? const Color(0xFFFF9500).withOpacity(0.12)
+                            : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: tieneGps
+                              ? const Color(0xFFFF9500).withOpacity(0.4)
+                              : Colors.grey.shade300,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            tieneGps
+                                ? Icons.location_on
+                                : Icons.person_outline,
+                            size: 12,
+                            color: tieneGps
+                                ? const Color(0xFFFF9500)
+                                : Colors.grey.shade400,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            (sup['nombre'] as String)
+                                .split(' ')
+                                .take(2)
+                                .join(' '),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: tieneGps
+                                  ? const Color(0xFFE65100)
+                                  : Colors.grey.shade500,
+                              fontWeight: tieneGps
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
             ],
 
             // Cancelar: disponible mientras la solicitud siga activa

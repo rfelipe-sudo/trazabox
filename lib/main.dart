@@ -57,6 +57,7 @@ import 'package:trazabox/services/kepler_polling_service.dart';
 import 'package:trazabox/services/alertas_cto_service.dart';
 import 'package:trazabox/services/notificacion_service.dart';
 import 'package:trazabox/services/alarm_audio_service.dart';
+import 'package:trazabox/services/comunicado_service.dart';
 import 'package:trazabox/utils/session_manager.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -134,18 +135,15 @@ void main() async {
       print('⚠️ [Main] Error configurando listeners: $e');
     }
 
-    try {
+    // KeplerPollingService y AlertasCTOService desactivados.
+    // Las alertas CTO de TRAZA no usan estos endpoints de CREA.
+    // ignore: dead_code
+    if (false) {
       final keplerPolling = KeplerPollingService();
       await keplerPolling.iniciar();
-    } catch (e) {
-      print('⚠️ [Main] Error iniciando KeplerPollingService: $e');
-    }
 
-    try {
       final alertasCTOService = AlertasCTOService();
       await alertasCTOService.iniciar();
-    } catch (e) {
-      print('⚠️ [Main] Error iniciando AlertasCTOService: $e');
     }
   } else {
     print('ℹ️ [Main] Monitoreo fraude / alertas CTO desactivado (AppConstants)');
@@ -471,6 +469,7 @@ class _TrazaboxSesionLifecycleGuardState extends State<_TrazaboxSesionLifecycleG
     if (state == AppLifecycleState.resumed) {
       SesionDispositivoService.verificarSiCorresponde();
       unawaited(FcmService.instance.onAppResumed());
+      unawaited(ComunicadoService.instance.processPendingComunicado());
     }
   }
 
@@ -534,6 +533,8 @@ class _AppHomeByRolState extends State<_AppHomeByRol> {
           WidgetsBinding.instance.addPostFrameCallback((_) async {
             unawaited(FcmService.instance.syncFcmTokenDispositivo());
             unawaited(FcmService.instance.initSupervisorAyudaMonitor());
+            unawaited(ComunicadoService.instance.iniciarMonitor());
+            unawaited(ComunicadoService.instance.mostrarInmediato(reproducirSonido: true));
             final rut = await AyudaService.resolverRutSupervisorSesion();
             if (rut.isNotEmpty) {
               unawaited(AyudaService().iniciarMonitoreoGlobalSupervisor(rut));
@@ -544,6 +545,8 @@ class _AppHomeByRolState extends State<_AppHomeByRol> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           unawaited(FcmService.instance.syncFcmTokenDispositivo());
           unawaited(FcmService.instance.initSolicitudMonitor());
+          unawaited(ComunicadoService.instance.iniciarMonitor());
+          unawaited(ComunicadoService.instance.mostrarInmediato(reproducirSonido: true));
         });
         return const HomeScreen();
       },
@@ -660,11 +663,6 @@ class AppWrapper extends StatelessWidget {
         // Sin registro → pantalla de registro por RUT
         if (auth.necesitaRegistro) {
           return const RegistroRutScreen();
-        }
-
-        // Registrado pero falta desbloquear sesión
-        if (auth.isAuthenticated && auth.requiereDesbloqueoSesion) {
-          return const DesbloqueoAppScreen();
         }
 
         if (auth.isAuthenticated) {

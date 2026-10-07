@@ -6,9 +6,10 @@ import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:trazabox/models/solicitud_ayuda.dart';
+import 'package:trazabox/services/ayuda_alerta_estado.dart';
 import 'package:trazabox/services/estado_supervisor_service.dart';
-import 'package:trazabox/services/notification_service.dart';
 import 'package:trazabox/services/fcm_service.dart';
+import 'package:trazabox/services/notification_service.dart';
 
 /// Servicio de Ayuda en Terreno con Supabase Realtime.
 /// Singleton — una sola instancia por toda la sesión de la app.
@@ -49,6 +50,13 @@ class AyudaService extends ChangeNotifier {
   // No se destruye al cerrar SolicitudesAyudaScreen.
   RealtimeChannel? _canalGlobal;
   String? _rutSupervisorGlobal;
+
+  // Timer GPS global del supervisor: corre mientras la sesión esté activa,
+  // independiente de qué pantalla esté abierta.
+  Timer? _timerGpsGlobal;
+
+  // Evita doble sonido cuando el canal global y el de pantalla disparan a la vez.
+  final Set<String> _ticketsEnAlerta = {};
 
   // Rastreo de estado anterior para evitar disparar el diálogo
   // de respuesta cuando la actualización es solo de GPS (no de estado)
@@ -141,6 +149,10 @@ class AyudaService extends ChangeNotifier {
       final solicitud = SolicitudAyuda.fromJson(resp);
       _solicitudActual = solicitud;
       notifyListeners();
+
+      // Respaldo FCM al supervisor (el trigger SQL también dispara).
+      unawaited(_notificarSupervisorAyudaFcm(solicitud.ticketId));
+
       return {'ok': true, 'solicitud': solicitud};
     } catch (e) {
       debugPrint('❌ [AyudaService] Error al insertar solicitud: $e');
@@ -396,6 +408,9 @@ class AyudaService extends ChangeNotifier {
           .where((s) => s.ticketId != ticketId)
           .toList();
       notifyListeners();
+
+      unawaited(_notificarSupervisorAyudaFcm(ticketId, evento: 'traspaso'));
+
       debugPrint('✅ [AyudaService] Ticket $ticketId traspasado a $nombreDestino');
       return true;
     } catch (e) {
@@ -412,6 +427,9 @@ class AyudaService extends ChangeNotifier {
           .update({'estado': 'cancelada'})
           .eq('ticket_id', ticketId);
       debugPrint('🗑️ [AyudaService] Solicitud $ticketId cancelada');
+
+      unawaited(_notificarSupervisorAyudaFcm(ticketId, evento: 'cancelacion'));
+
       return true;
     } catch (e) {
       debugPrint('❌ [AyudaService] Error cancelando solicitud: $e');
@@ -544,6 +562,15 @@ class AyudaService extends ChangeNotifier {
     _canalGlobal?.unsubscribe();
     _rutSupervisorGlobal = rutSupervisor;
 
+    // Timer GPS global: actualiza lat_ultima cada 2 min sin importar qué
+    // pantalla esté abierta. Se cancela solo en detenerMonitoreoGlobal (logout).
+    _timerGpsGlobal?.cancel();
+    actualizarUbicacionSupervisor(rutSupervisor).catchError((_) {});
+    _timerGpsGlobal = Timer.periodic(const Duration(minutes: 2), (_) {
+      actualizarUbicacionSupervisor(rutSupervisor).catchError((_) {});
+    });
+    debugPrint('📍 [AyudaService] Timer GPS global supervisor activo (cada 2 min)');
+
     // Pre-cargar equipo; se refrescará si viene vacío en el callback
     final List<String> rutsEquipo = await obtenerRutsEquipo(rutSupervisor);
     debugPrint(
@@ -593,16 +620,7 @@ class AyudaService extends ChangeNotifier {
               notifyListeners();
             }
 
-            // Vibración SIEMPRE (funciona aunque el dispositivo esté en silencio)
-            NotificationService().vibrarParaAlerta();
-            // Notificación PRIMERO (sonido del sistema, funciona aunque
-            // la app esté en otra pantalla o minimizada)
-            await NotificationService().alertaSupervisorNuevaSolicitud(
-              tecnicoNombre: nueva.tecnicoNombre,
-              tipoAyuda: nueva.tipo.displayName,
-            );
-            // Sonido in-app como refuerzo (cuando la app está en primer plano)
-            await _reproducirSonido();
+            await _alertarNuevaSolicitudSupervisor(nueva);
           },
         )
         .subscribe();
@@ -615,6 +633,8 @@ class AyudaService extends ChangeNotifier {
     _canalGlobal?.unsubscribe();
     _canalGlobal = null;
     _rutSupervisorGlobal = null;
+    _timerGpsGlobal?.cancel();
+    _timerGpsGlobal = null;
     debugPrint('📡 [AyudaService] Canal global supervisor detenido');
   }
 
@@ -722,23 +742,50 @@ class AyudaService extends ChangeNotifier {
     required double lngTecnico,
   }) async {
     try {
-      // 1. Obtener supervisores asignados a este técnico
-      // Columnas reales: rut_supervisor, rut_tecnico
-      final relaciones = await _supabase
+      // 1. Obtener la zona del técnico
+      final filaZona = await _supabase
           .from('supervisor_tecnicos_traza')
-          .select('rut_supervisor')
-          .eq('rut_tecnico', rutTecnico);
+          .select('zona')
+          .eq('rut_tecnico', rutTecnico)
+          .maybeSingle();
 
-      if (relaciones == null || (relaciones as List).isEmpty) {
+      final zona = filaZona?['zona'] as String?;
+
+      List<dynamic> rutsSuper;
+
+      if (zona != null && zona.isNotEmpty) {
+        // 2a. Todos los supervisores de la misma zona
+        final relaciones = await _supabase
+            .from('supervisor_tecnicos_traza')
+            .select('rut_supervisor')
+            .eq('zona', zona);
+        final set = <String>{};
+        for (final r in relaciones as List) {
+          final rut = r['rut_supervisor'] as String?;
+          if (rut != null) set.add(rut);
+        }
+        rutsSuper = set.toList();
         debugPrint(
-            '⚠️ [AyudaService] Sin supervisor asignado para $rutTecnico');
+            '📍 [AyudaService] Buscando en zona "$zona" — ${rutsSuper.length} supervisores');
+      } else {
+        // 2b. Fallback: solo el supervisor asignado a este técnico
+        final relaciones = await _supabase
+            .from('supervisor_tecnicos_traza')
+            .select('rut_supervisor')
+            .eq('rut_tecnico', rutTecnico);
+        rutsSuper = (relaciones as List)
+            .map((e) => e['rut_supervisor'] as String)
+            .toList();
+        debugPrint(
+            '⚠️ [AyudaService] Sin zona para $rutTecnico — usando supervisor asignado');
+      }
+
+      if (rutsSuper.isEmpty) {
+        debugPrint('⚠️ [AyudaService] Sin supervisores disponibles para $rutTecnico');
         return null;
       }
 
-      final rutsSuper =
-          (relaciones as List).map((e) => e['rut_supervisor'] as String).toList();
-
-      // 2. Obtener ubicaciones de esos supervisores
+      // 3. Obtener GPS de todos esos supervisores
       final supervisores = await _supabase
           .from('supervisores_traza')
           .select('rut, nombre, lat_ultima, lng_ultima')
@@ -748,7 +795,7 @@ class AyudaService extends ChangeNotifier {
         return null;
       }
 
-      // 3. Calcular distancia y elegir el más cercano que tenga GPS
+      // 4. Elegir el más cercano que tenga GPS
       Map<String, dynamic>? cercano;
       double distanciaMenor = double.infinity;
 
@@ -768,7 +815,7 @@ class AyudaService extends ChangeNotifier {
         }
       }
 
-      // Si ninguno tiene GPS, asignar al primero de la lista
+      // Si ninguno tiene GPS, usar el primero de la lista
       if (cercano == null && (supervisores as List).isNotEmpty) {
         final primero = (supervisores as List).first;
         cercano = {
@@ -788,6 +835,67 @@ class AyudaService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // TÉCNICO — Supervisores de la zona con GPS (para mostrar en mapa pendiente)
+  // ─────────────────────────────────────────────────────────────
+
+  /// Retorna todos los supervisores de la zona del técnico que tienen GPS.
+  /// Usado en la pantalla de ayuda para mostrarlos mientras la solicitud
+  /// está pendiente de aceptación.
+  Future<List<Map<String, dynamic>>> obtenerSupervisoresZonaConGps(
+      String rutTecnico) async {
+    try {
+      final filaZona = await _supabase
+          .from('supervisor_tecnicos_traza')
+          .select('zona')
+          .eq('rut_tecnico', rutTecnico)
+          .maybeSingle();
+
+      final zona = filaZona?['zona'] as String?;
+      List<String> rutsSuper;
+
+      if (zona != null && zona.isNotEmpty) {
+        final relaciones = await _supabase
+            .from('supervisor_tecnicos_traza')
+            .select('rut_supervisor')
+            .eq('zona', zona);
+        final set = <String>{};
+        for (final r in relaciones as List) {
+          final rut = r['rut_supervisor'] as String?;
+          if (rut != null) set.add(rut);
+        }
+        rutsSuper = set.toList();
+      } else {
+        final relaciones = await _supabase
+            .from('supervisor_tecnicos_traza')
+            .select('rut_supervisor')
+            .eq('rut_tecnico', rutTecnico);
+        rutsSuper = (relaciones as List)
+            .map((e) => e['rut_supervisor'] as String)
+            .toList();
+      }
+
+      if (rutsSuper.isEmpty) return [];
+
+      final rows = await _supabase
+          .from('supervisores_traza')
+          .select('rut, nombre, lat_ultima, lng_ultima')
+          .inFilter('rut', rutsSuper);
+
+      return (rows as List)
+          .map((s) => {
+                'rut': s['rut'] as String,
+                'nombre': (s['nombre'] as String?) ?? 'Supervisor',
+                'lat': (s['lat_ultima'] as num?)?.toDouble(),
+                'lng': (s['lng_ultima'] as num?)?.toDouble(),
+              })
+          .toList();
+    } catch (e) {
+      debugPrint('⚠️ [AyudaService] Error obteniendo supervisores zona: $e');
+      return [];
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Fórmula Haversine para distancia en km
   // ─────────────────────────────────────────────────────────────
 
@@ -803,6 +911,54 @@ class AyudaService extends ChangeNotifier {
   }
 
   double _toRad(double deg) => deg * pi / 180;
+
+  // ─────────────────────────────────────────────────────────────
+  // FCM — Notificar supervisor via Edge Function
+  // ─────────────────────────────────────────────────────────────
+
+  Future<void> _notificarSupervisorAyudaFcm(
+    String ticketId, {
+    String? evento,
+  }) async {
+    if (ticketId.isEmpty) return;
+    try {
+      await _supabase.functions.invoke(
+        'notificar-supervisor-ayuda',
+        body: {
+          'ticket_id': ticketId,
+          if (evento != null) 'evento': evento,
+        },
+      );
+      debugPrint(
+          '📲 [AyudaService] FCM supervisor disparado ticket=$ticketId evento=$evento');
+    } catch (e) {
+      debugPrint('⚠️ [AyudaService] FCM supervisor falló: $e');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Deduplicación de alertas al supervisor
+  // ─────────────────────────────────────────────────────────────
+
+  Future<void> _alertarNuevaSolicitudSupervisor(SolicitudAyuda solicitud) async {
+    final tid = solicitud.ticketId;
+    if (tid.isEmpty || _ticketsEnAlerta.contains(tid)) return;
+    if (await AyudaAlertaEstado.wasSeen(tid)) return;
+
+    _ticketsEnAlerta.add(tid);
+    try {
+      NotificationService().vibrarParaAlerta();
+      await NotificationService().alertaSupervisorNuevaSolicitud(
+        tecnicoNombre: solicitud.tecnicoNombre,
+        tipoAyuda: solicitud.tipo.displayName,
+      );
+      await _reproducirSonido();
+      await AyudaAlertaEstado.markSeen(tid);
+      debugPrint('🔔 [AyudaService] Alerta supervisor ticket=$tid');
+    } finally {
+      _ticketsEnAlerta.remove(tid);
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────
   // Audio

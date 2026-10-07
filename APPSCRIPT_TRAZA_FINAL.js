@@ -206,11 +206,12 @@ function calcularRGU(tipoActividad, subtipo, pasosXml, itemsXml) {
     if (totalDbox > 2) rgu_adicional += (totalDbox - 2) * 0.5;
     rgu_adicional += equipos.extensores * 0.5;
   }
+  // MODIFICACIONES
+  // dbox: primero vale 1.0, adicionales 0.5 c/u; extensores: siempre 0.75 c/u
   else if (tipoLower.includes("modific")) {
-    rgu_base = 0.75;
     tipo_orden = "Modificación";
-    const totalEquipos = equipos.dbox + equipos.extensores;
-    if (totalEquipos > 1) rgu_adicional = (totalEquipos - 1) * 0.5;
+    rgu_base = equipos.dbox > 0 ? 1.0 : 0;
+    rgu_adicional = Math.max(0, equipos.dbox - 1) * 0.5 + equipos.extensores * 0.75;
   }
   else if (tipoLower.includes("reparaci") || tipoLower.includes("averia") || tipoLower.includes("soporte")) {
     rgu_base = 1;

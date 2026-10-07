@@ -1,7 +1,7 @@
 name: trazabox
 description: "TrazaBox - Gestión de alertas de fibra óptica para TRAZA"
 publish_to: 'none'
-version: 1.3.0+5
+version: 3.0.4+16
 
 environment:
   sdk: ^3.9.2
@@ -80,7 +80,17 @@ dependencies:
   
   # Grabación de audio
   record: ^6.0.0
+
+  # Generación y compartición de PDFs
+  pdf: ^3.11.0
+  printing: ^5.13.2
+
+  # SHA-256 para firma electrónica de la guía (Ley 19.799)
+  crypto: ^3.0.3
   
+  # Descomprimir APK embebido (App Técnico)
+  archive: ^4.0.7
+
   # WebSocket para comunicación en tiempo real
   web_socket_channel: ^3.0.1
   wifi_scan: ^0.4.1
@@ -142,6 +152,12 @@ flutter:
     - assets/icons/
     - assets/logo/
     - assets/apk/
+
+  fonts:
+    - family: ComicNeue
+      fonts:
+        - asset: assets/fonts/ComicNeue-Bold.ttf
+          weight: 700
 
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN DE ICONO DE LA APP

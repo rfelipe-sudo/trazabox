@@ -214,6 +214,23 @@ class _RegistroRutScreenState extends State<RegistroRutScreen> {
         print('[RegistroRut] FCM registro fallo: $e');
       }
 
+      final estadoFinal = row['estado']?.toString() ?? 'pendiente';
+      final estaAutorizado =
+          row['autorizado'] == true || estadoFinal == 'autorizado';
+
+      if (estaAutorizado) {
+        // Persistir sesión para que AuthProvider la encuentre al reiniciar
+        await context.read<AuthProvider>().registrarDispositivo(
+          nombre: nombreFinal,
+          rutCuerpo: rutFinal,
+          rol: rolFinal ?? 'tecnico',
+        );
+        if (mounted) {
+          Navigator.of(context).pushReplacementNamed('/home');
+        }
+        return;
+      }
+
       if (mounted) {
         await context.read<AuthProvider>().syncUsuarioDesdePrefs();
       }
@@ -221,7 +238,7 @@ class _RegistroRutScreenState extends State<RegistroRutScreen> {
       Navigator.of(context).pushReplacementNamed(
         '/dispositivo_bloqueado',
         arguments: <String, String>{
-          'estado': row['estado']?.toString() ?? 'pendiente',
+          'estado': estadoFinal,
           'mensaje': row['mensaje']?.toString() ??
               'Tu dispositivo fue registrado. Espera que el coordinador '
                   'lo autorice para ingresar a TRAZABOX.',

@@ -20,7 +20,7 @@ object MaterialAlertNotifier {
 
     private const val CHANNEL_ID = "mat_alertas_7"
     private const val CHANNEL_COMUNICADOS = "comunicados_traza_1"
-    private const val CHANNEL_AYUDA_SUPERVISOR = "ayuda_supervisor_1"
+    private const val CHANNEL_AYUDA_SUPERVISOR = "ayuda_supervisor_2"
 
     private val SOUND_ACTIONS = setOf(
         "solicitud_material",

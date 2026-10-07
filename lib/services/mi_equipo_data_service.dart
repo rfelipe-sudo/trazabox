@@ -103,17 +103,15 @@ class MiEquipoDataService {
       if (ruts.isEmpty) return [];
 
       final hoy = DateTime.now();
-      final dd = hoy.day.toString().padLeft(2, '0');
-      final mm = hoy.month.toString().padLeft(2, '0');
-      final yy = hoy.year.toString().substring(2);
-      final fechaPunto = '$dd.$mm.$yy';
-      final fechaBarra = '$dd/$mm/$yy';
+      // produccion.fecha_trabajo es DATE → comparar en ISO yyyy-MM-dd
+      final fechaIso =
+          '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
 
       final rutsLista = _rutsConVariantes(ruts);
       final resp = await _supabase
           .from('produccion')
           .select('codigo_tecnico')
-          .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
+          .eq('fecha_trabajo', fechaIso)
           .inFilter('rut_tecnico', rutsLista);
 
       final codigos = <String>{};
@@ -139,19 +137,17 @@ class MiEquipoDataService {
       };
     }
     try {
-      final mm = mesSeleccionado.month.toString().padLeft(2, '0');
-      final yy = mesSeleccionado.year.toString().substring(2);
-      final yy4 = mesSeleccionado.year.toString();
-      final sufPunto = '.$mm.$yy';
-      final sufBarra = '/$mm/$yy';
-      final sufPunto4 = '.$mm.$yy4';
-      final sufBarra4 = '/$mm/$yy4';
+      final iniMes = DateTime(mesSeleccionado.year, mesSeleccionado.month, 1);
+      final finMes = DateTime(mesSeleccionado.year, mesSeleccionado.month + 1, 1);
+      String iso(DateTime d) =>
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
       final rutsLista = _rutsConVariantes(rutsEquipo);
       final resp = await _supabase
           .from('produccion')
           .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, area_derivacion, rgu_total, es_px0, fecha_trabajo')
-          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4')
+          .gte('fecha_trabajo', iso(iniMes))
+          .lt('fecha_trabajo', iso(finMes))
           .inFilter('rut_tecnico', rutsLista);
 
       final lista = resp as List;
@@ -198,17 +194,15 @@ class MiEquipoDataService {
     }
     try {
       final hoy = DateTime.now();
-      final dd = hoy.day.toString().padLeft(2, '0');
-      final mm = hoy.month.toString().padLeft(2, '0');
-      final yy = hoy.year.toString().substring(2);
-      final fechaPunto = '$dd.$mm.$yy';
-      final fechaBarra = '$dd/$mm/$yy';
+      // produccion.fecha_trabajo es DATE → comparar en ISO yyyy-MM-dd
+      final fechaIso =
+          '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
 
       final rutsLista = _rutsConVariantes(rutsEquipo);
       final resp = await _supabase
           .from('produccion')
           .select('rut_tecnico, tecnico, codigo_tecnico, orden_trabajo, estado, area_derivacion, rgu_total, es_px0')
-          .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
+          .eq('fecha_trabajo', fechaIso)
           .inFilter('rut_tecnico', rutsLista);
 
       final lista = (resp as List).cast<Map<String, dynamic>>();
@@ -378,19 +372,17 @@ class MiEquipoDataService {
     }
     try {
       final mesAnt = DateTime(mesSeleccionado.year, mesSeleccionado.month - 1);
-      final mm = mesAnt.month.toString().padLeft(2, '0');
-      final yy = mesAnt.year.toString().substring(2);
-      final yy4 = mesAnt.year.toString();
-      final sufPunto = '.$mm.$yy';
-      final sufBarra = '/$mm/$yy';
-      final sufPunto4 = '.$mm.$yy4';
-      final sufBarra4 = '/$mm/$yy4';
+      final iniMes = DateTime(mesAnt.year, mesAnt.month, 1);
+      final finMes = DateTime(mesAnt.year, mesAnt.month + 1, 1);
+      String iso(DateTime d) =>
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
       final rutsLista = _rutsConVariantes(rutsEquipo);
       final respProd = await _supabase
           .from('produccion')
           .select('rut_tecnico, estado, area_derivacion, rgu_total')
-          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4')
+          .gte('fecha_trabajo', iso(iniMes))
+          .lt('fecha_trabajo', iso(finMes))
           .inFilter('rut_tecnico', rutsLista);
 
       final remAnt = DateTime(mesAnt.year, mesAnt.month + 1, 1);
@@ -455,16 +447,14 @@ class MiEquipoDataService {
     if (rutsEquipo.isEmpty) return [];
     try {
       final hoy = DateTime.now();
-      final dd = hoy.day.toString().padLeft(2, '0');
-      final mm = hoy.month.toString().padLeft(2, '0');
-      final yy = hoy.year.toString().substring(2);
-      final fechaPunto = '$dd.$mm.$yy';
-      final fechaBarra = '$dd/$mm/$yy';
+      // produccion.fecha_trabajo es DATE → comparar en ISO yyyy-MM-dd
+      final fechaIso =
+          '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
 
       final resp = await _supabase
           .from('produccion')
           .select('rut_tecnico, tecnico, estado, area_derivacion, rgu_total')
-          .inFilter('fecha_trabajo', [fechaPunto, fechaBarra])
+          .eq('fecha_trabajo', fechaIso)
           .inFilter('rut_tecnico', _rutsConVariantes(rutsEquipo));
 
       final mapa = <String, Map<String, dynamic>>{};

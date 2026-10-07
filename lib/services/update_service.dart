@@ -9,6 +9,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+// Poner en true para reactivar el chequeo automático de actualizaciones.
+const bool kUpdateCheckEnabled = false;
+
 /// URL de la última release (API pública GitHub).
 const String kGitHubLatestReleaseUrl =
     'https://api.github.com/repos/rfelipe-sudo/trazabox/releases/latest';
@@ -120,6 +123,10 @@ class UpdateService {
   /// Consulta GitHub y compara con [PackageInfo.version] (sin build).
   /// Punto de entrada único desde el arranque ([SplashScreen]); no depende del estado de auth.
   static Future<UpdateCheckResult> checkForUpdate() async {
+    if (!kUpdateCheckEnabled) {
+      print('⏸️ [Update] Chequeo desactivado (kUpdateCheckEnabled = false)');
+      return const UpdateCheckUpToDate();
+    }
     print('🔄 [Update] Verificando actualización...');
     try {
       final packageInfo = await PackageInfo.fromPlatform();

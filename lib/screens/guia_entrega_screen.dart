@@ -1,14 +1,20 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:printing/printing.dart';
 import 'package:signature/signature.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:trazabox/models/solicitud_material.dart';
+import 'package:trazabox/screens/pin_entry_screen.dart';
+import 'package:trazabox/services/guia_pdf_service.dart';
+import 'package:trazabox/services/material_solicitud_service.dart';
 
 /// Pantalla de guía de entrega — firmada por entregador Y solicitante.
 /// [esEntregador]: true = quien entrega, false = quien recibe.
@@ -42,10 +48,16 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
   static const Color _red     = Color(0xFFEF4444);
 
   late final SignatureController _firmaCtrl;
-  bool _guardando = false;
-  bool _paso2     = false;
+  bool _guardando  = false;
+  bool _paso2      = false;
   String? _guiaId;
   bool _completada = false;
+  bool _cancelada  = false;
+  String? _errorCierre;
+  int? _traspasoErpId;
+  Uint8List? _pdfBytes;
+
+  StreamSubscription<List<Map<String, dynamic>>>? _subSolicitud;
 
   // Series ingresadas por el entregador
   final List<String>      _series   = [];
@@ -69,13 +81,149 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
     if (!widget.esEntregador && widget.solicitud.guiaId != null) {
       _paso2 = true;
     }
+
+    _suscribirCancelacion();
   }
 
   @override
   void dispose() {
+    _subSolicitud?.cancel();
     _firmaCtrl.dispose();
     _serieCtrl.dispose();
     super.dispose();
+  }
+
+  // ── Cancelación ──────────────────────────────────────────────
+
+  /// Si la otra parte cancela la solicitud, avisar y salir de la guía.
+  void _suscribirCancelacion() {
+    _subSolicitud = _db
+        .from('solicitudes_material')
+        .stream(primaryKey: ['id'])
+        .eq('id', widget.solicitud.id)
+        .listen((rows) {
+      if (rows.isEmpty) return;
+      _manejarEstadoRemoto(rows.first['estado'] as String?);
+    });
+  }
+
+  void _manejarEstadoRemoto(String? estado) {
+    if (!mounted || _completada || _cancelada) return;
+    if (estado == 'cancelada') {
+      _cancelada = true;
+      _subSolicitud?.cancel();
+      showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: _surface,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: _border)),
+            title: const Row(children: [
+              Icon(Icons.cancel_outlined, color: _red, size: 22),
+              SizedBox(width: 8),
+              Text('Solicitud cancelada',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+            ]),
+            content: const Text(
+              'La solicitud fue cancelada. La guía queda sin efecto.',
+              style: TextStyle(color: _textDim, fontSize: 13),
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.pop(context);
+                },
+                style: FilledButton.styleFrom(backgroundColor: _red),
+                child: const Text('Entendido'),
+              ),
+            ],
+          ),
+        );
+    }
+  }
+
+  /// Cancela la solicitud completa. Disponible siempre, salvo que el ERP
+  /// ya haya confirmado el traspaso (ahí el material ya cambió de bodega).
+  Future<void> _cancelarSolicitud() async {
+    final sol = widget.solicitud;
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: _border)),
+        title: const Row(children: [
+          Icon(Icons.warning_amber_rounded, color: _red, size: 22),
+          SizedBox(width: 8),
+          Text('¿Cancelar solicitud?',
+              style: TextStyle(color: Colors.white, fontSize: 16)),
+        ]),
+        content: Text(
+          'Se cancelará la solicitud de ${sol.cantidad}× ${sol.tipoMaterial} '
+          'y la guía quedará sin efecto. El otro técnico será avisado.',
+          style: const TextStyle(color: _textDim, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Volver',
+                style: TextStyle(color: Colors.white70)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: _red),
+            child: const Text('Sí, cancelar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || !mounted) return;
+
+    setState(() => _guardando = true);
+    try {
+      // Resguardo: si el ERP ya confirmó, el material ya se movió de
+      // bodega — no se puede cancelar, corresponde completar la firma.
+      final solRow = await _db
+          .from('solicitudes_material')
+          .select('traspaso_erp_id, estado')
+          .eq('id', sol.id)
+          .maybeSingle();
+      if (solRow?['traspaso_erp_id'] != null) {
+        setState(() => _guardando = false);
+        _snack('El traspaso ya fue confirmado en bodega (ERP): '
+            'no se puede cancelar. Completa la firma para cerrar la guía.');
+        return;
+      }
+      if (solRow?['estado'] == 'completada') {
+        setState(() => _guardando = false);
+        _snack('La solicitud ya fue completada.');
+        return;
+      }
+
+      _cancelada = true; // evita que el propio stream muestre el diálogo
+      await _db
+          .from('solicitudes_material')
+          .update({'estado': 'cancelada'}).eq('id', sol.id);
+
+      final guiaId = _guiaId ?? sol.guiaId;
+      if (guiaId != null) {
+        await _db
+            .from('solicitudes_bodega')
+            .update({'estado': 'cancelada'}).eq('id', guiaId);
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      _cancelada = false;
+      setState(() => _guardando = false);
+      _snack('Error al cancelar: $e');
+    }
   }
 
   // ── Series ───────────────────────────────────────────────────
@@ -161,7 +309,7 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
     }
   }
 
-  // ── Paso 2: Solicitante firma ────────────────────────────────
+  // ── Paso 2: Solicitante firma (en el teléfono del entregador) ──
 
   Future<void> _firmarSolicitante() async {
     if (_firmaCtrl.isEmpty) {
@@ -179,16 +327,131 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
       }).eq('id', guiaId!);
 
       await _db.from('solicitudes_material').update({
-        'estado': 'completada',
+        'estado': 'firmada',
       }).eq('id', widget.solicitud.id);
+
+      // PIN de confirmación: aparece en la pantalla del solicitante;
+      // el entregador lo teclea aquí como prueba de presencia.
+      await MaterialSolicitudService().generarPin(
+        solicitudId: widget.solicitud.id,
+        rutSolicitante: widget.solicitud.rutSolicitante,
+      );
+
+      setState(() => _guardando = false);
+      if (!mounted) return;
+
+      final pinOk = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute<bool>(
+          builder: (_) => PinEntryScreen(solicitud: widget.solicitud),
+        ),
+      );
+      if (!mounted) return;
+
+      if (pinOk == true) {
+        await _cerrarTraspaso();
+      } else if (!_cancelada) {
+        // Intentos agotados o cancelación remota: la guía queda sin efecto
+        _cancelada = true;
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      setState(() => _guardando = false);
+      _snack('Error: $e');
+    }
+  }
+
+  // ── Cierre: ERP → correo → PDF (tras PIN validado) ────────────
+
+  Future<void> _cerrarTraspaso() async {
+    setState(() {
+      _guardando   = true;
+      _errorCierre = null;
+    });
+    final sol = widget.solicitud;
+    try {
+      // ── El ERP es la fuente de verdad: el traspaso real en traza
+      // materiales debe confirmarse ANTES de completar la solicitud.
+      // Idempotente: traspaso_erp_id persistido + candado de saldo.
+      final solRow = await _db
+          .from('solicitudes_material')
+          .select('traspaso_erp_id')
+          .eq('id', sol.id)
+          .maybeSingle();
+      int? erpId = (solRow?['traspaso_erp_id'] as num?)?.toInt();
+
+      if (erpId == null) {
+        final rutOrigen = sol.rutEntregador?.isNotEmpty == true
+            ? sol.rutEntregador!
+            : widget.rutPropio;
+        final r = await MaterialSolicitudService().traspasarEnErp(
+          rutOrigen: rutOrigen,
+          rutDestino: sol.rutSolicitante,
+          tipoMaterial: sol.tipoMaterial,
+          cantidad: sol.cantidad,
+          series: _series,
+          solicitudId: sol.id,
+        );
+
+        await _db.from('solicitudes_material').update({
+          'traspaso_erp_id': r.ok ? r.traspasoId : null,
+          'traspaso_estado': r.ok ? 'ok' : 'error',
+          'traspaso_errores': r.ok
+              ? null
+              : [{'motivo': r.detalle, 'traspaso_id': r.traspasoId}],
+        }).eq('id', sol.id);
+
+        if (!r.ok) {
+          setState(() {
+            _guardando   = false;
+            _errorCierre = r.detalle;
+          });
+          return;
+        }
+        erpId = r.traspasoId;
+      }
+      _traspasoErpId = erpId;
+
+      await _db.from('solicitudes_material').update({
+        'estado': 'completada',
+      }).eq('id', sol.id);
+
+      // Correo de respaldo (no bloquea el cierre)
+      unawaited(MaterialSolicitudService().enviarCorreoTraspaso(
+        solicitud: sol,
+        series: _series,
+        traspasoErpId: erpId != null && erpId > 0 ? erpId : null,
+      ));
+
+      // Guía PDF desde la fila real de la guía
+      final guiaId = _guiaId ?? sol.guiaId;
+      if (guiaId != null) {
+        try {
+          final guiaRow = await _db
+              .from('solicitudes_bodega')
+              .select()
+              .eq('id', guiaId)
+              .maybeSingle();
+          if (guiaRow != null) {
+            _pdfBytes = await GuiaPdfService.generar(
+              guia: guiaRow,
+              traspasoErpId: erpId != null && erpId > 0 ? erpId : null,
+            );
+          }
+        } catch (e) {
+          debugPrint('[Guia] PDF no generado: $e');
+        }
+      }
 
       setState(() {
         _completada = true;
         _guardando  = false;
       });
     } catch (e) {
-      setState(() => _guardando = false);
-      _snack('Error: $e');
+      setState(() {
+        _guardando   = false;
+        _errorCierre = '$e';
+      });
     }
   }
 
@@ -226,10 +489,76 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
         ),
         title: const Text('Guía de Entrega',
             style: TextStyle(color: Colors.white, fontSize: 15)),
+        actions: [
+          // Tras el PIN validado ya no se puede cancelar: el material fue
+          // entregado; solo falta (re)enviar el registro al ERP.
+          if (!_completada && _errorCierre == null)
+            TextButton.icon(
+              onPressed: _guardando ? null : _cancelarSolicitud,
+              icon: const Icon(Icons.cancel_outlined, color: _red, size: 16),
+              label: const Text('Cancelar',
+                  style: TextStyle(
+                      color: _red,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold)),
+            ),
+        ],
       ),
-      body: _completada ? _buildConfirmacion() : _buildGuia(),
+      body: _completada
+          ? _buildConfirmacion()
+          : _errorCierre != null
+              ? _buildErrorCierre()
+              : _buildGuia(),
     );
   }
+
+  // ── ERP rechazó tras el PIN: reintento sin repetir firmas/PIN ──
+
+  Widget _buildErrorCierre() => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.sync_problem, color: _red, size: 64),
+            const SizedBox(height: 20),
+            const Text('Bodega (ERP) no confirmó el traspaso',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Text(_errorCierre ?? '',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: _textDim, fontSize: 13)),
+            const SizedBox(height: 8),
+            const Text(
+                'Las firmas y el PIN ya quedaron registrados: solo falta '
+                'el registro en traza materiales.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _textDim, fontSize: 12)),
+            const SizedBox(height: 28),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _guardando ? null : _cerrarTraspaso,
+                icon: _guardando
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.black))
+                    : const Icon(Icons.refresh, size: 18),
+                label: Text(_guardando ? 'Enviando…' : 'REINTENTAR TRASPASO',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                style: FilledButton.styleFrom(
+                    backgroundColor: _accent,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 14)),
+              ),
+            ),
+          ]),
+        ),
+      );
 
   // ── Pantalla de confirmación ─────────────────────────────────
 
@@ -239,28 +568,55 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const Icon(Icons.check_circle, color: _green, size: 72),
             const SizedBox(height: 20),
-            const Text('Guía firmada correctamente',
+            const Text('¡Traspaso completado!',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     color: Colors.white,
                     fontSize: 20,
                     fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            const Text(
-                'El registro fue enviado a bodega para confirmar el traspaso.',
+            Text(
+                _traspasoErpId != null && _traspasoErpId! > 0
+                    ? 'Registrado en traza materiales (traspaso N° $_traspasoErpId). '
+                        'El correo de respaldo fue enviado.'
+                    : 'Registrado en traza materiales. '
+                        'El correo de respaldo fue enviado.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: _textDim, fontSize: 13)),
-            const SizedBox(height: 32),
-            FilledButton(
-              onPressed: () => Navigator.of(context)
-                ..pop()
-                ..pop(),
-              style: FilledButton.styleFrom(
-                  backgroundColor: _green,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 32, vertical: 14)),
-              child: const Text('Listo',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+                style: const TextStyle(color: _textDim, fontSize: 13)),
+            const SizedBox(height: 28),
+            if (_pdfBytes != null) ...[
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => Printing.sharePdf(
+                    bytes: _pdfBytes!,
+                    filename:
+                        'guia_entrega_${widget.solicitud.id.substring(0, 8)}.pdf',
+                  ),
+                  icon: const Icon(Icons.picture_as_pdf, size: 18),
+                  label: const Text('Compartir guía (PDF)',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: _accent,
+                      side: BorderSide(
+                          color: _accent.withValues(alpha: 0.5)),
+                      padding: const EdgeInsets.symmetric(vertical: 12)),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () =>
+                    Navigator.of(context).popUntil((r) => r.isFirst),
+                style: FilledButton.styleFrom(
+                    backgroundColor: _green,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 14)),
+                child: const Text('Listo',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
             ),
           ]),
         ),

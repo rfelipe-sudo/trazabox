@@ -34,7 +34,7 @@ class TrazaboxApplication : MultiDexApplication() {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
-        // ── Limpiar canales obsoletos (v1–v5) ─────────────────────────────────
+        // ── Limpiar canales obsoletos ──────────────────────────────────────────
         // Android congela las propiedades al crear el canal; si un APK anterior
         // lo creó sin USAGE_ALARM el sonido nunca suena. Eliminar y recrear con
         // un ID nuevo es la única solución.
@@ -44,6 +44,7 @@ class TrazaboxApplication : MultiDexApplication() {
         manager.deleteNotificationChannel("mat_alertas_4")
         manager.deleteNotificationChannel("mat_alertas_5")
         manager.deleteNotificationChannel("mat_alertas_6")
+        manager.deleteNotificationChannel("ayuda_supervisor_1")
 
         // ── Canal material v7 (permanente) ────────────────────────────────────
         // USAGE_ALARM: el sonido suena incluso con el teléfono en modo vibración.
@@ -88,7 +89,7 @@ class TrazaboxApplication : MultiDexApplication() {
             "android.resource://$packageName/raw/ayuda_supervisor_mario"
         )
         val canalAyudaSupervisor = NotificationChannel(
-            "ayuda_supervisor_1",
+            "ayuda_supervisor_2",
             "Ayuda en terreno — supervisor",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {

@@ -6,9 +6,12 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:trazabox/constants/map_styles.dart';
 import 'package:trazabox/models/solicitud_material.dart';
 import 'package:trazabox/screens/guia_entrega_screen.dart';
+import 'package:trazabox/services/material_solicitud_service.dart';
 
 /// Pantalla del entregador mientras se desplaza hacia el solicitante.
 /// Cuando la distancia baja de 200 m se abre automáticamente la guía.
@@ -49,6 +52,8 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
   BitmapDescriptor? _iconoSolicitante;
 
   Timer? _timerGps;
+  bool _avisoCancelacion = false;
+  StreamSubscription<List<Map<String, dynamic>>>? _subSolicitud;
 
   @override
   void initState() {
@@ -56,13 +61,71 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
     _posicion = widget.posicionInicial;
     _crearIconos();
     _iniciarSeguimiento();
+    _suscribirCancelacion();
   }
 
   @override
   void dispose() {
     _timerGps?.cancel();
+    _subSolicitud?.cancel();
     _mapController?.dispose();
     super.dispose();
+  }
+
+  void _suscribirCancelacion() {
+    _subSolicitud = Supabase.instance.client
+        .from('solicitudes_material')
+        .stream(primaryKey: ['id'])
+        .eq('id', widget.solicitud.id)
+        .listen((rows) {
+      if (rows.isEmpty) return;
+      _manejarEstadoRemoto(rows.first['estado'] as String?);
+    });
+  }
+
+  void _manejarEstadoRemoto(String? estado) {
+    if (!mounted || _avisoCancelacion) return;
+    if (estado == 'cancelada') {
+      _avisoCancelacion = true;
+      _subSolicitud?.cancel();
+      _timerGps?.cancel();
+      _mostrarCancelacion();
+    }
+  }
+
+  void _mostrarCancelacion() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: _border)),
+        title: const Row(children: [
+          Icon(Icons.cancel_outlined, color: Color(0xFFEF4444), size: 22),
+          SizedBox(width: 8),
+          Text('Solicitud cancelada',
+              style: TextStyle(color: Colors.white, fontSize: 16)),
+        ]),
+        content: Text(
+          'El técnico canceló la solicitud de ${widget.solicitud.tipoMaterial}.',
+          style: const TextStyle(color: _textDim, fontSize: 13),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.pop(context);
+            },
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444)),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _crearIconos() async {
@@ -117,6 +180,17 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
       if (!mounted) return;
       setState(() => _posicion = pos);
 
+      // Publica posición para que el solicitante vea distancia en tiempo real
+      Supabase.instance.client
+          .from('solicitudes_material')
+          .update({
+            'lat_entregador': pos.latitude,
+            'lng_entregador': pos.longitude,
+          })
+          .eq('id', widget.solicitud.id)
+          .then((_) {})
+          .catchError((_) {});
+
       final sol = widget.solicitud;
       if (sol.latSolicitante != null && sol.lngSolicitante != null) {
         final d = Geolocator.distanceBetween(pos.latitude, pos.longitude,
@@ -168,20 +242,33 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
       });
     }
 
-    // Centrar cámara entre ambos puntos
+    // Centrar cámara
     if (pos != null &&
         sol.latSolicitante != null &&
         sol.lngSolicitante != null) {
+      // Ambas posiciones: mostrar punto medio
       final midLat = (pos.latitude + sol.latSolicitante!) / 2;
       final midLng = (pos.longitude + sol.lngSolicitante!) / 2;
       _mapController?.animateCamera(
         CameraUpdate.newLatLng(LatLng(midLat, midLng)),
+      );
+    } else if (sol.latSolicitante != null && sol.lngSolicitante != null) {
+      // Sin GPS propio: al menos mostrar al solicitante
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLng(
+            LatLng(sol.latSolicitante!, sol.lngSolicitante!)),
       );
     }
   }
 
   void _abrirGuia() {
     if (!mounted) return;
+    // Avisar con sonido al solicitante que el material llegó
+    unawaited(MaterialSolicitudService().notificarLlegada(
+      solicitudId: widget.solicitud.id,
+      rutSolicitante: widget.solicitud.rutSolicitante,
+      nombreEntregador: widget.nombrePropio,
+    ));
     Navigator.pushReplacement<void, void>(
       context,
       MaterialPageRoute<void>(
@@ -248,11 +335,15 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
             ),
           ),
 
-          // ── Barra superior ────────────────────────────────────
+          // ── Barra superior — Column para que el Stack tome la altura completa
           SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-              child: Row(children: [
+            bottom: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                  child: Row(children: [
                 GestureDetector(
                   onTap: () => Navigator.maybePop(context),
                   child: Container(
@@ -309,6 +400,8 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
                   ),
                 ),
               ]),
+                ),
+              ],
             ),
           ),
 
@@ -364,6 +457,16 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
                       ],
                     ),
 
+                    // ETA estimado
+                    if (distancia != null && distancia >= 200) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        '~${(distancia / 500).ceil()} min estimados',
+                        style: TextStyle(color: _textDim, fontSize: 12),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+
                     const SizedBox(height: 6),
 
                     // Material solicitado
@@ -389,6 +492,20 @@ class _EntregaEnCaminoScreenState extends State<EntregaEnCaminoScreen> {
                       style:
                           TextStyle(color: _textDim, fontSize: 12),
                     ),
+                    const SizedBox(height: 6),
+                    Row(children: [
+                      Icon(Icons.schedule, color: _orange, size: 13),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Tu colega espera por sus materiales',
+                          style: TextStyle(
+                              color: _orange,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ]),
 
                     if (distancia != null && distancia < 200) ...[
                       const SizedBox(height: 14),

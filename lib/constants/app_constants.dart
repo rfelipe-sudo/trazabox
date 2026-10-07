@@ -27,6 +27,17 @@ class AppConstants {
     'Content-Type': 'application/json',
   };
   
+  // Sábana TOA vía Kepler, filtrada por empresa TRAZ (equipos seriados
+  // registrados por el técnico). ~3× más liviana que la sábana completa.
+  static const String keplerSabanaBaseUrl = 'https://kepler.sbip.cl/api/v1/toa';
+  static const String keplerSabanaEmpresa = 'TRAZ';
+
+  // Proxy Traza (API logística apilogistica.traza.cl vía proxy en Lightsail)
+  // Docs: wiki "warp-flask-proxy". El proxy exige el header X-API-Key.
+  static const String trazaProxyBaseUrl = 'https://proxy-traza.sbip.cl';
+  static const String trazaProxyApiKey =
+      '6db9d17817d6d97047312b9d43bcc5bd43dcfab6e33ba459796f1bf6cec48a68';
+
   // ElevenLabs
   static const String elevenLabsAgentId = 'CREA_AGENT_ID'; // Reemplazar con ID real
   static const String elevenLabsVoiceId = 'CREA_VOICE_ID'; // Reemplazar con ID real

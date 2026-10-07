@@ -224,7 +224,7 @@ serve(async (req) => {
       channelId = "comunicados_traza_1";
       notificationSound = "comunicado_mushroom";
     } else if (esAyudaSupervisor) {
-      channelId = "ayuda_supervisor_1";
+      channelId = "ayuda_supervisor_2";
       notificationSound = accion === "ayuda_cancelada"
         ? "default"
         : "ayuda_supervisor_mario";

@@ -1,6 +1,40 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:trazabox/constants/app_constants.dart';
+
+/// Clave de comparación de RUT (sin puntos ni guión).
+String normalizeRutKey(String rut) =>
+    rut.replaceAll(RegExp(r'[.\-\s]'), '').toUpperCase();
+
+/// Formato que espera Kepler `get_pelo_db`: "12345678-9".
+String formatRutForKepler(String rut) {
+  final clean = rut.replaceAll(RegExp(r'[.\-\s]'), '').toUpperCase();
+  if (clean.length < 2) return rut.trim();
+  if (rut.contains('-') && !rut.contains('.')) {
+    return rut.replaceAll('.', '').trim();
+  }
+  return '${clean.substring(0, clean.length - 1)}-${clean.substring(clean.length - 1)}';
+}
+
+/// Tipos de red en los que Nyquist no aplica (sin access_id de red neutra).
+const _tiposRedNoMedibles = {'FTTH', 'CFTTH', 'HFC', 'CHFC'};
+
+/// `true` si [tipo] es FTTH, CFTTH, HFC o CHFC.
+bool esTipoRedNoMedible(String? tipo) {
+  final t = (tipo ?? '').trim().toUpperCase();
+  if (t.isEmpty) return false;
+  if (_tiposRedNoMedibles.contains(t)) return true;
+  for (final k in _tiposRedNoMedibles) {
+    if (t.contains(k)) return true;
+  }
+  return false;
+}
+
+String mensajeOrdenSinAccessIdRedNeutra(String tipo) {
+  final t = tipo.trim().toUpperCase();
+  return 'ORDEN SIN ACCESS ID\nTIPO DE RED $t\nSOLO PUEDES MEDIR ÓRDENES DE RED NEUTRA.';
+}
 
 /// Puerto del endpoint Kepler Traza con el nivel inicial de potencia
 class PuertoKepler {
@@ -125,12 +159,54 @@ class KeplerActiveOrder {
   final String accessIdCorto;       // "1-3KSLBJ7G"
   final String accessIdPrefijado;   // "02-1-3KSLBJ7G"
   final EstadoCTO estado;
+  /// OT de TOA/Kepler cuando está disponible (puede venir vacía desde get_pelo_db).
+  final String ordenTrabajo;
+  final String tipoOrden;
 
   const KeplerActiveOrder({
     required this.accessIdCorto,
     required this.accessIdPrefijado,
     required this.estado,
+    this.ordenTrabajo = '',
+    this.tipoOrden = '',
   });
+}
+
+/// Resultado unificado al resolver la orden iniciada del técnico (Kepler TOA +
+/// get_pelo_db + Supabase). Permite mostrar la OT aunque falte el historial local.
+class OrdenActivaCto {
+  final String ordenTrabajo;
+  final String tipoOrden;
+  /// Valor de `tecnologia` en produccion (FTTH, CFTTH, etc.).
+  final String tipoRedProducto;
+  final String accessIdCorto;
+  final String accessIdPrefijado;
+  final EstadoCTO? estado;
+  /// Confirmada en TOA Kepler con estado "Iniciado".
+  final bool confirmadaEnToa;
+
+  const OrdenActivaCto({
+    required this.ordenTrabajo,
+    required this.tipoOrden,
+    this.tipoRedProducto = '',
+    required this.accessIdCorto,
+    required this.accessIdPrefijado,
+    required this.estado,
+    required this.confirmadaEnToa,
+  });
+
+  bool get tieneAccessId => accessIdPrefijado.isNotEmpty;
+  bool get tieneEstado => estado != null;
+  bool get esRedNoNeutra => esTipoRedNoMedible(tipoRedProducto);
+
+  OrdenHistorial toHistorial({DateTime? fecha}) => OrdenHistorial(
+        ordenTrabajo: ordenTrabajo,
+        accessIdPrefijado: accessIdPrefijado,
+        tipoOrden: tipoOrden,
+        estado: confirmadaEnToa ? 'Iniciado' : 'iniciado',
+        fechaReferencia: fecha ?? DateTime.now(),
+        horaInicio: fecha,
+      );
 }
 
 /// Resultado completo de la consulta al estado del vecino (CTO)
@@ -214,8 +290,9 @@ class NyquistService {
   // Credenciales Basic Auth para Nyquist (turing-android baseline).
   static const String _nyquistUser     = '0npVpRUG7MegtpmfdDuJ3A';
   static const String _nyquistPassword = 'Ddw3u241Y0MN_x7ezZixKIJtk1ZRHpG6Zz2tCYrhXVg';
-  // Endpoint correcto: nyquist.sbip.cl (no nyquistbio).
-  static const String _nyquistBaseUrl  = 'https://nyquist.sbip.cl';
+  // Instancia Nyquist de TRAZA (verificada 2026-08-25: mismas credenciales
+  // Basic que nyquist.sbip.cl, pero es la instancia del tenant TRAZA).
+  static const String _nyquistBaseUrl  = 'https://nyquisttraza.sbip.cl';
   static const String _nyquistVnoId    = '02';
 
   /// Construye el access_id a partir del número de OT.
@@ -232,12 +309,12 @@ class NyquistService {
       print('🔍 [Nyquist/CREA] tabla_access_id para RUT: $rut');
 
       final response = await _supabase
-          .from('tabla_access_id')
-          .select('rut_tecnico, access_id, orden_trabajo, fecha_trabajo')
-          .eq('rut_tecnico', rut)
+          .from('access_id_asistente')
+          .select('rut_o_bucket, access_id, orden_de_trabajo, fecha')
+          .eq('rut_o_bucket', rut)
           .not('access_id', 'is', null)
           .neq('access_id', '')
-          .order('fecha_trabajo', ascending: false)
+          .order('fecha', ascending: false)
           .limit(1)
           .maybeSingle();
 
@@ -250,15 +327,13 @@ class NyquistService {
       // exige el prefijo "{VNO}-" siempre, así que lo anteponemos.
       final accessRaw = response['access_id']?.toString().trim() ?? '';
       final accessFull = accessRaw.isEmpty ? '' : '$_nyquistVnoId-$accessRaw';
-      final ot = response['orden_trabajo']?.toString().trim() ?? '';
+      final ot = response['orden_de_trabajo']?.toString().trim() ?? '';
 
       print('🔍 [Nyquist/CREA] OT: "$ot" | AccessID raw: "$accessRaw" → "$accessFull"');
 
       return {
         'access_id': accessFull,
         'id_actividad': ot,
-        // tabla_access_id no expone tipo_red_producto. Devolvemos vacío para
-        // que el screen no caiga en `tecnologia_incompatible`.
         'tipo_red_producto': '',
         'orden_de_trabajo': ot,
       };
@@ -275,13 +350,13 @@ class NyquistService {
   Future<String?> buscarAccessIdEnTablaAccesId(String ordenTrabajo) async {
     try {
       final response = await _supabase
-          .from('tabla_access_id')
+          .from('access_id_asistente')
           .select('access_id')
-          .eq('orden_trabajo', ordenTrabajo)
+          .eq('orden_de_trabajo', ordenTrabajo)
           .not('access_id', 'is', null)
           .neq('access_id', '')
           .neq('access_id', 'Sin Datos')
-          .order('fecha_trabajo', ascending: false)
+          .order('fecha', ascending: false)
           .limit(1)
           .maybeSingle();
 
@@ -370,33 +445,60 @@ class NyquistService {
     // `date` (no `timestamptz`), el `gte` con `toIso8601String()` falla.
     // Mejor traemos todo y ordenamos local; el filtro de [dias] lo
     // aplicamos después contra la fecha parseada.
+    // 1. Órdenes del historial desde la tabla access_id (access_id, fecha)
     List<dynamic> rows;
     try {
       final resp = await _supabase
-          .from('tabla_access_id')
-          .select('rut_tecnico, access_id, orden_trabajo, fecha_trabajo')
-          .eq('rut_tecnico', r)
-          .order('fecha_trabajo', ascending: false);
+          .from('access_id_asistente')
+          .select('rut_o_bucket, access_id, orden_de_trabajo, fecha')
+          .eq('rut_o_bucket', r)
+          .order('fecha', ascending: false);
       rows = List<dynamic>.from(resp as List);
     } catch (e) {
       print('❌ [Nyquist/CREA] historial error: $e');
       rows = <dynamic>[];
     }
 
-    print('🔍 [Nyquist/CREA] historial RUT="$r" → ${rows.length} filas');
+    // 2. Estado y tipo_orden desde produccion (cruzando por rut_tecnico)
+    final Map<String, Map<String, String>> prodMap = {};
+    try {
+      final hoy = DateTime.now();
+      final corteStr =
+          '${hoy.subtract(Duration(days: dias)).year}-${hoy.subtract(Duration(days: dias)).month.toString().padLeft(2, '0')}-${hoy.subtract(Duration(days: dias)).day.toString().padLeft(2, '0')}';
+      final prodRows = await _supabase
+          .from('produccion')
+          .select('orden_trabajo, estado, tipo_orden, tipo_red_producto')
+          .eq('rut_tecnico', r)
+          .gte('fecha_trabajo', corteStr)
+          .order('fecha_trabajo', ascending: false);
+      for (final row in (prodRows as List)) {
+        final ot = row['orden_trabajo']?.toString().trim() ?? '';
+        if (ot.isNotEmpty && !prodMap.containsKey(ot)) {
+          prodMap[ot] = {
+            'estado': row['estado']?.toString() ?? '',
+            'tipo_orden': row['tipo_orden']?.toString() ?? '',
+            'tipo_red_producto': row['tipo_red_producto']?.toString() ?? '',
+          };
+        }
+      }
+    } catch (e) {
+      print('⚠️ [Nyquist/CREA] produccion lookup: $e');
+    }
+
+    print('🔍 [Nyquist/CREA] historial RUT="$r" → ${rows.length} filas, ${prodMap.length} en produccion');
     if (rows.isNotEmpty) {
       final f = (rows.first as Map);
       print('🔍 [Nyquist/CREA] sample row → '
-          'fecha_trabajo=${f['fecha_trabajo']} | '
+          'fecha=${f['fecha']} | '
           'access_id=${f['access_id']} | '
-          'orden_trabajo=${f['orden_trabajo']}');
+          'orden_de_trabajo=${f['orden_de_trabajo']}');
     }
     final hoyLog = DateTime.now();
     print('🔍 [Nyquist/CREA] now=$hoyLog (local). Detalle por fila:');
     for (var i = 0; i < rows.length && i < 5; i++) {
       final raw = rows[i] as Map;
-      final fc = raw['fecha_trabajo'];
-      print('  [$i] raw=$fc | ot=${raw['orden_trabajo']}');
+      final fc = raw['fecha'];
+      print('  [$i] raw=$fc | ot=${raw['orden_de_trabajo']}');
     }
 
     DateTime? parseDate(dynamic v) {
@@ -431,18 +533,17 @@ class NyquistService {
     final out = <OrdenHistorial>[];
     for (final m in rows.whereType<Map>()) {
       final raw = Map<String, dynamic>.from(m);
-      final ot = (raw['orden_trabajo'] ?? '').toString().trim();
+      final ot = (raw['orden_de_trabajo'] ?? '').toString().trim();
       final accessRaw = (raw['access_id'] ?? '').toString().trim();
-      // Mismo criterio que buscarAccessIdPorRut: prefijar siempre con VNO.
       final accessFull = accessRaw.isEmpty ? '' : '$_nyquistVnoId-$accessRaw';
-      final fecha = parseDate(raw['fecha_trabajo']);
-      // Filtro de [dias] aplicado en cliente (sólo si pudimos parsear fecha).
+      final fecha = parseDate(raw['fecha']);
       if (fecha != null && fecha.isBefore(corte)) continue;
+      final prod = prodMap[ot];
       out.add(OrdenHistorial(
         ordenTrabajo: ot,
         accessIdPrefijado: accessFull,
-        tipoOrden: '',
-        estado: '',
+        tipoOrden: prod?['tipo_orden'] ?? '',
+        estado: prod?['estado'] ?? '',
         fechaReferencia: fecha ?? DateTime.now(),
         horaInicio: fecha,
         horaTermino: null,
@@ -507,7 +608,7 @@ class NyquistService {
   /// - `accessIdPrefijado` ej. "02-1-3KSLBJ7G"
   /// - `estado`          un `EstadoCTO` listo para pintar la tabla.
   Future<KeplerActiveOrder?> fetchActiveOrderFromKepler(String rut) async {
-    final url = Uri.parse('https://keplerv2.sbip.cl/api/v1/toa/get_pelo_db/$rut');
+    final url = Uri.parse('https://keplertraza.sbip.cl/api/v1/toa/get_pelo_db/$rut');
     print('🌐 [Kepler/get_pelo_db] $url');
 
     final response = await http.get(url).timeout(const Duration(seconds: 20));
@@ -614,7 +715,7 @@ class NyquistService {
   /// [accessIdCorto] — sin prefijo VNO, ej: "1-3L47FQ8J".
   Future<EstadoCTO> fetchEstadoByAccessId(String accessIdCorto) async {
     final url = Uri.parse(
-        'https://keplerv2.sbip.cl/api/v1/toa/get_pelo_db_access_id/$accessIdCorto');
+        'https://keplertraza.sbip.cl/api/v1/toa/get_pelo_db_access_id/$accessIdCorto');
     print('🌐 [Kepler/get_pelo_db_access_id] $url');
 
     try {
@@ -667,7 +768,7 @@ class NyquistService {
   /// queda sana (todos los puertos OK). URL provisional — actualizar cuando
   /// Kepler habilite el endpoint en producción.
   static const String _keplerCertificarUrl =
-      'https://keplerv2.sbip.cl/api/v1/toa/certificar_niveles';
+      'https://keplertraza.sbip.cl/api/v1/toa/certificar_niveles';
 
   /// Construye el payload con los datos de Nyquist y hace POST a Kepler.
   /// Retorna `true` solo si la respuesta es HTTP 200.
@@ -809,5 +910,306 @@ class NyquistService {
 
     print('✅ [Kepler] ${result.length} puertos con inicial válido');
     return result;
+  }
+
+  // ── Helpers para resolución de orden iniciada ──────────────────────────
+
+  static const String _keplerToaUrl =
+      'https://keplertraza.sbip.cl/api/v1/toa/get_data_toa_other_enterprise';
+
+  static bool otCoincide(String a, String b) {
+    final na = a.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
+    final nb = b.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
+    return na.isNotEmpty && nb.isNotEmpty && na == nb;
+  }
+
+  static String _otNoVacia(String? v) => v?.trim() ?? '';
+
+  static int _parseHoraMinutos(String? hora) {
+    if (hora == null || hora.isEmpty) return 0;
+    final partes = hora.split(':');
+    if (partes.length < 2) return 0;
+    return (int.tryParse(partes[0]) ?? 0) * 60 + (int.tryParse(partes[1]) ?? 0);
+  }
+
+  static DateTime? _parseFechaProceso(dynamic v) {
+    if (v == null) return null;
+    final s = v.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s);
+  }
+
+  static DateTime _instanteOrdenProd(Map<String, dynamic> row) {
+    final fecha = _parseFechaProceso(row['fecha_proceso']) ?? DateTime(1970);
+    final mins = _parseHoraMinutos(row['hora_inicio']?.toString());
+    return DateTime(fecha.year, fecha.month, fecha.day, mins ~/ 60, mins % 60);
+  }
+
+  List<Map<String, dynamic>> _parseToaItems(dynamic decoded) {
+    if (decoded is List) {
+      return decoded.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    }
+    if (decoded is Map) {
+      final data = decoded['data'];
+      if (data is List) {
+        return data.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+    }
+    return [];
+  }
+
+  Map<String, String> _mapToaIniciada(Map<String, dynamic> m) => {
+        'orden_trabajo': m['Orden_de_Trabajo']?.toString().trim() ?? '',
+        'tipo_orden': m['tipo_actividad']?.toString() ??
+            m['Tipo']?.toString() ??
+            m['Tipo de Orden']?.toString() ??
+            '',
+        'rut_tecnico': m['Rut_tecnico']?.toString() ?? '',
+      };
+
+  /// `tipo_red_producto` (tecnologia) de una OT en `produccion` (más reciente).
+  Future<String?> obtenerTipoRedProductoPorOt(String ordenTrabajo) async {
+    final ot = ordenTrabajo.trim();
+    if (ot.isEmpty) return null;
+    try {
+      final rows = await _supabase
+          .from('produccion')
+          .select('tipo_red_producto, tipo_orden')
+          .eq('orden_trabajo', ot)
+          .order('hora_inicio', ascending: false)
+          .limit(5);
+
+      for (final raw in (rows as List)) {
+        final r = Map<String, dynamic>.from(raw as Map);
+        final trp = r['tipo_red_producto']?.toString().trim() ?? '';
+        if (trp.isNotEmpty) return trp;
+      }
+      for (final raw in (rows as List)) {
+        final r = Map<String, dynamic>.from(raw as Map);
+        final to = r['tipo_orden']?.toString().trim() ?? '';
+        if (esTipoRedNoMedible(to)) return to;
+      }
+      return null;
+    } catch (e) {
+      print('⚠️ [Nyquist/TRAZA] obtenerTipoRedProductoPorOt: $e');
+      return null;
+    }
+  }
+
+  /// Todas las órdenes "Iniciado" del técnico en TOA (puede haber más de una).
+  Future<List<Map<String, String>>> _fetchOrdenesIniciadasToaLista(String rut) async {
+    final response = await http
+        .get(Uri.parse(_keplerToaUrl), headers: AppConstants.keplerHeaders)
+        .timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 200) {
+      print('❌ [Kepler/TOA] HTTP ${response.statusCode}');
+      return [];
+    }
+
+    final decoded = jsonDecode(response.body);
+    final rutKey = normalizeRutKey(rut);
+    final lista = <Map<String, String>>[];
+
+    for (final m in _parseToaItems(decoded)) {
+      final estado = (m['Estado']?.toString() ?? '').toLowerCase();
+      if (estado != 'iniciado') continue;
+      final rutOrden = m['Rut_tecnico']?.toString() ?? '';
+      if (normalizeRutKey(rutOrden) != rutKey) continue;
+      final mapped = _mapToaIniciada(m);
+      if (_otNoVacia(mapped['orden_trabajo']).isEmpty) continue;
+      lista.add(mapped);
+    }
+    return lista;
+  }
+
+  /// Orden iniciada más reciente en `produccion` (hoy/ayer).
+  Future<Map<String, String>?> _fetchIniciadaRecienteProduccion(
+    String rut, {
+    Set<String>? soloOts,
+  }) async {
+    try {
+      final rutFmt = formatRutForKepler(rut);
+      final hoy = DateTime.now();
+      final ayer = hoy.subtract(const Duration(days: 1));
+      final ayerStr = '${ayer.year}-${ayer.month.toString().padLeft(2, '0')}-${ayer.day.toString().padLeft(2, '0')}';
+      final manana = hoy.add(const Duration(days: 1));
+      final mananaStr = '${manana.year}-${manana.month.toString().padLeft(2, '0')}-${manana.day.toString().padLeft(2, '0')}';
+
+      final candidatos = <Map<String, dynamic>>[];
+
+      for (final rutQuery in {rutFmt, rut.trim()}) {
+        final rows = await _supabase
+            .from('produccion')
+            .select('orden_trabajo, estado, tipo_orden, tipo_red_producto, fecha_trabajo, hora_inicio')
+            .eq('rut_tecnico', rutQuery)
+            .gte('fecha_trabajo', ayerStr)
+            .lt('fecha_trabajo', mananaStr);
+
+        for (final raw in (rows as List)) {
+          final r = Map<String, dynamic>.from(raw as Map);
+          final est = (r['estado']?.toString() ?? '').toLowerCase();
+          if (est != 'iniciado') continue;
+          final ot = r['orden_trabajo']?.toString().trim() ?? '';
+          if (ot.isEmpty) continue;
+          if (soloOts != null && !soloOts.any((c) => otCoincide(c, ot))) continue;
+          // Normalizar a fecha_proceso para _instanteOrdenProd
+          r['fecha_proceso'] = r['fecha_trabajo'];
+          candidatos.add(r);
+        }
+      }
+
+      if (candidatos.isEmpty) return null;
+      candidatos.sort((a, b) => _instanteOrdenProd(b).compareTo(_instanteOrdenProd(a)));
+
+      final mejor = candidatos.first;
+      final ot = mejor['orden_trabajo']?.toString().trim() ?? '';
+      print('✅ [Nyquist/TRAZA] iniciada reciente produccion: $ot');
+      return {
+        'orden_trabajo': ot,
+        'tipo_orden': mejor['tipo_orden']?.toString() ?? '',
+        'tipo_red_producto': mejor['tipo_red_producto']?.toString() ?? '',
+      };
+    } catch (e) {
+      print('⚠️ [Nyquist/TRAZA] _fetchIniciadaRecienteProduccion: $e');
+      return null;
+    }
+  }
+
+  /// Busca la orden en estado "Iniciado" del técnico en TOA.
+  Future<Map<String, String>?> fetchOrdenIniciadaDesdeToa(String rut) async {
+    try {
+      final lista = await _fetchOrdenesIniciadasToaLista(rut);
+      if (lista.isEmpty) {
+        print('🔍 [Kepler/TOA] Sin orden iniciada para RUT=$rut');
+        return null;
+      }
+      if (lista.length == 1) {
+        print('✅ [Kepler/TOA] Orden iniciada: ${lista.first['orden_trabajo']}');
+        return lista.first;
+      }
+
+      final otsToa = lista.map((m) => m['orden_trabajo'] ?? '').toSet();
+      final prodPick = await _fetchIniciadaRecienteProduccion(rut, soloOts: otsToa);
+      if (prodPick != null) {
+        final ot = prodPick['orden_trabajo'] ?? '';
+        final toaMatch = lista.firstWhere(
+          (t) => otCoincide(t['orden_trabajo'] ?? '', ot),
+          orElse: () => lista.first,
+        );
+        return {
+          ...toaMatch,
+          'tipo_orden': prodPick['tipo_orden']?.isNotEmpty == true
+              ? prodPick['tipo_orden']!
+              : (toaMatch['tipo_orden'] ?? ''),
+        };
+      }
+      return lista.first;
+    } catch (e) {
+      print('❌ [Kepler/TOA] fetchOrdenIniciadaDesdeToa: $e\n$e');
+      return null;
+    }
+  }
+
+  Future<Map<String, String>?> _fetchIniciadaDesdeProduccion(String rut) async =>
+      _fetchIniciadaRecienteProduccion(rut);
+
+  /// Resuelve la orden activa combinando TOA + get_pelo_db + Supabase.
+  Future<OrdenActivaCto?> resolveOrdenActivaCto(String rut) async {
+    Map<String, String>? toa;
+    Map<String, String>? prod;
+    KeplerActiveOrder? kepler;
+
+    try {
+      final results = await Future.wait([
+        fetchOrdenIniciadaDesdeToa(rut),
+        _fetchIniciadaDesdeProduccion(rut),
+        fetchActiveOrderFromKepler(rut),
+      ]);
+      toa = results[0] as Map<String, String>?;
+      prod = results[1] as Map<String, String>?;
+      kepler = results[2] as KeplerActiveOrder?;
+    } catch (e) {
+      print('⚠️ [Nyquist/TRAZA] resolveOrdenActivaCto error parcial: $e');
+      toa ??= await fetchOrdenIniciadaDesdeToa(rut);
+      prod ??= await _fetchIniciadaDesdeProduccion(rut);
+      try { kepler ??= await fetchActiveOrderFromKepler(rut); } catch (_) {}
+    }
+
+    var ot = _otNoVacia(toa?['orden_trabajo']);
+    if (ot.isEmpty) ot = _otNoVacia(prod?['orden_trabajo']);
+    if (ot.isEmpty) {
+      final kOt = _otNoVacia(kepler?.ordenTrabajo);
+      if (kOt.isEmpty) {
+        print('🔍 [Nyquist/TRAZA] resolveOrdenActivaCto: sin orden iniciada');
+        return null;
+      }
+      ot = kOt;
+    }
+
+    var tipo = _otNoVacia(toa?['tipo_orden']).isNotEmpty
+        ? toa!['tipo_orden']!
+        : (_otNoVacia(prod?['tipo_orden']).isNotEmpty
+            ? prod!['tipo_orden']!
+            : (kepler?.tipoOrden ?? ''));
+
+    var accessCorto = '';
+    var accessPref = '';
+    EstadoCTO? estado;
+
+    final keplerOt = _otNoVacia(kepler?.ordenTrabajo);
+    final keplerAplica = kepler != null && (keplerOt.isEmpty || otCoincide(keplerOt, ot));
+    if (keplerAplica) {
+      accessCorto = kepler.accessIdCorto;
+      accessPref = kepler.accessIdPrefijado;
+      estado = kepler.estado;
+    }
+
+    if (accessPref.isEmpty && ot.isNotEmpty) {
+      final raw = await buscarAccessIdEnTablaAccesId(ot);
+      if (raw != null && raw.isNotEmpty && raw.toLowerCase() != 'sin datos') {
+        accessCorto = raw;
+        accessPref = '$_nyquistVnoId-$raw';
+      }
+    }
+
+    if (accessPref.isEmpty && ot.isNotEmpty) {
+      final porOt = await buscarAccessIdPorOT(ot);
+      final aid = porOt?['access_id']?.toString() ?? '';
+      if (aid.isNotEmpty) {
+        accessPref = aid;
+        accessCorto = aid.replaceFirst(RegExp(r'^\d{1,2}-'), '');
+      }
+    }
+
+    var tipoRedProducto = _otNoVacia(prod?['tipo_red_producto']).isNotEmpty
+        ? prod!['tipo_red_producto']!
+        : '';
+    if (tipoRedProducto.isEmpty && ot.isNotEmpty) {
+      tipoRedProducto = await obtenerTipoRedProductoPorOt(ot) ?? '';
+    }
+
+    if (accessPref.isNotEmpty && estado == null && !esTipoRedNoMedible(tipoRedProducto)) {
+      try {
+        estado = await consultarEstado(accessPref);
+      } catch (eNyq) {
+        print('⚠️ [Nyquist/TRAZA] Nyquist en resolve falló: $eNyq');
+        if (accessCorto.isNotEmpty) {
+          try { estado = await fetchEstadoByAccessId(accessCorto); } catch (_) {}
+        }
+      }
+    }
+
+    print('✅ [Nyquist/TRAZA] resolveOrdenActivaCto → OT=$ot access=$accessPref');
+
+    return OrdenActivaCto(
+      ordenTrabajo: ot,
+      tipoOrden: tipo,
+      tipoRedProducto: tipoRedProducto,
+      accessIdCorto: accessCorto,
+      accessIdPrefijado: accessPref,
+      estado: estado,
+      confirmadaEnToa: toa != null,
+    );
   }
 }

@@ -16,7 +16,9 @@ const String kKeplerRegisterTokenPath = '/api/v1/toa/devices/register-token';
 const String kFcmPlatform = 'android';
 
 // Material — radio geográfico de destinatarios
-const bool kMaterialFiltroDistanciaActivo = true;
+// PROVISORIO false para pruebas de traspaso sin técnicos cercanos.
+// Volver a true antes de distribuir al plantel.
+const bool kMaterialFiltroDistanciaActivo = false;
 const double kMaterialRadioKm = 5.0;
 const int kMaterialGpsMaxAntiguedadMinutos = 10;
 

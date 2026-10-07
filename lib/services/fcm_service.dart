@@ -19,6 +19,7 @@ import 'package:trazabox/services/material_alerta_background.dart';
 import 'package:trazabox/services/material_alerta_estado.dart';
 import 'package:trazabox/services/ayuda_service.dart';
 import 'package:trazabox/services/logistica_service.dart';
+import 'package:trazabox/services/comunicado_service.dart';
 
 /// Canal Android creado en TrazaboxApplication.kt (USAGE_ALARM).
 const _materialChannelId = 'mat_alertas_7';
@@ -59,11 +60,15 @@ Future<void> _mostrarNotificacionLocal(Map<String, dynamic> data) async {
   if (accion == null) return;
 
   final esMaterial    = accion == 'solicitud_material';
+  final esAsignada    = accion == 'material_asignada';
+  final esLlegada     = accion == 'material_llego';
+  final esPin         = accion == 'pin_intercambio';
   final esCancelacion = accion == 'solicitud_cancelada';
   final esGuiaBodega  = accion == 'guia_firmada_bodega';
   final esFlota          = accion == 'sol_comb_flota' || accion == 'sol_comb_jefe_ops';
   final esTraspasoBodega = accion == 'traspaso_bodega';
-  if (!esMaterial && !esCancelacion && !esGuiaBodega && !esFlota && !esTraspasoBodega) {
+  if (!esMaterial && !esAsignada && !esLlegada && !esPin &&
+      !esCancelacion && !esGuiaBodega && !esFlota && !esTraspasoBodega) {
     return;
   }
 
@@ -79,6 +84,18 @@ Future<void> _mostrarNotificacionLocal(Map<String, dynamic> data) async {
     title   = data['title']?.toString() ?? '¡Solicitud de material!';
     body    = data['body']?.toString() ?? data['descripcion']?.toString() ?? 'Un colega necesita material';
     notifId = 42;
+  } else if (esAsignada) {
+    title   = data['title']?.toString() ?? '¡Material en camino!';
+    body    = data['body']?.toString() ?? data['descripcion']?.toString() ?? 'Un técnico va en camino con tu material';
+    notifId = 46;
+  } else if (esLlegada) {
+    title   = data['title']?.toString() ?? '¡Tu material llegó!';
+    body    = data['body']?.toString() ?? data['descripcion']?.toString() ?? 'Firma la guía y dicta tu PIN';
+    notifId = 47;
+  } else if (esPin) {
+    title   = data['title']?.toString() ?? 'Tu PIN de confirmación';
+    body    = data['body']?.toString() ?? 'Ábrelo en la app y díctaselo al entregador';
+    notifId = 50;
   } else if (esCancelacion) {
     title   = 'Solicitud cancelada';
     body    = data['body']?.toString() ?? data['descripcion']?.toString() ?? 'La solicitud fue cancelada';
@@ -103,7 +120,7 @@ Future<void> _mostrarNotificacionLocal(Map<String, dynamic> data) async {
     channelDescription: 'Alertas de solicitudes de material entre técnicos',
     importance: Importance.high,
     priority: Priority.high,
-    playSound: esMaterial || esGuiaBodega || esFlota || esTraspasoBodega,
+    playSound: esMaterial || esAsignada || esLlegada || esPin || esGuiaBodega || esFlota || esTraspasoBodega,
     enableVibration: true,
     vibrationPattern: Int64List.fromList([0, 300, 200, 300]),
     category: AndroidNotificationCategory.alarm,
@@ -129,7 +146,6 @@ const String kPrefPendingRoute = 'fcm_pending_route';
 
 /// PIN recibido en background antes de que el solicitante abra la app.
 const String kPrefPendingPin = 'fcm_pending_pin';
-const String kPrefComunicadoPendiente = 'comunicado_traza_pendiente';
 const String kPrefPinVistoPrefix = 'pin_visto_';
 
 /// Aplica la acción de un mensaje FCM al SharedPreferences.
@@ -151,8 +167,8 @@ Future<void> _aplicarAccion(Map<String, dynamic> data) async {
   } else if (accion == 'guia_firmada_bodega') {
     await prefs.setString(kPrefGuiaBodegaPendiente, 'true');
   } else if (accion == 'comunicado_traza') {
-      // Traza: módulo comunicados no portado aún
-    } else if (accion == 'solicitud_ayuda' || accion == 'ayuda_cancelada') {
+    await prefs.setString(kPrefComunicadoPendiente, 'true');
+  } else if (accion == 'solicitud_ayuda' || accion == 'ayuda_cancelada') {
     await prefs.setString(kPrefPendingRoute, '/solicitudes-ayuda');
   }
 }
@@ -1033,6 +1049,8 @@ class FcmService {
         await MaterialAlertaEstado.markOpened(sid);
       }
       await _navegarARuta('/solicitud-material');
+    } else if (accion == 'material_asignada' || accion == 'material_llego') {
+      await _navegarARuta('/solicitud-material');
     } else if (accion == 'material_sin_respuesta') {
       await _navegarARuta('/solicitudes-material-supervisor');
     } else if (accion == 'solicitud_ayuda' || accion == 'ayuda_cancelada') {
@@ -1044,7 +1062,8 @@ class FcmService {
     } else if (accion == 'guia_firmada_bodega' || accion == 'traspaso_bodega') {
       await _navegarARuta('/bodega');
     } else if (accion == 'comunicado_traza') {
-      // Traza: módulo comunicados no portado aún
+      final id = data['comunicado_id']?.toString();
+      unawaited(ComunicadoService.instance.mostrarInmediato(comunicadoId: id));
     }
   }
 
@@ -1200,6 +1219,9 @@ class FcmService {
     await _sincronizarSupabase(m.data);
     await _alertaProvider?.refrescar();
     if (m.data['accion'] == 'solicitud_material' ||
+        m.data['accion'] == 'material_asignada' ||
+        m.data['accion'] == 'material_llego' ||
+        m.data['accion'] == 'pin_intercambio' ||
         m.data['accion'] == 'guia_firmada_bodega' ||
         m.data['accion'] == 'traspaso_bodega') {
       try { await _soundChannel.invokeMethod<void>('playAlerta'); } catch (_) {}

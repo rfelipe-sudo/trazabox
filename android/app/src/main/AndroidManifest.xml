@@ -95,6 +95,12 @@
                 android:resource="@xml/file_paths"/>
         </provider>
         
+        <activity
+            android:name=".AppTecnicoActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:hardwareAccelerated="true"
+            android:exported="false" />
+
         <!-- Servicio en segundo plano para detección de caminata -->
         <!-- El plugin flutter_background_service_android lo declara automáticamente -->
         <!-- Usamos tools:replace para agregar foregroundServiceType -->

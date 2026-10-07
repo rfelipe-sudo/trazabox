@@ -22,6 +22,9 @@ class MaterialAlertaBackground {
 
   static const _accionesSonoras = {
     'solicitud_material',
+    'material_asignada',
+    'material_llego',
+    'pin_intercambio',
     'guia_firmada_bodega',
     'sol_comb_flota',
     'sol_comb_jefe_ops',
@@ -79,6 +82,9 @@ class MaterialAlertaBackground {
       final esAyuda = _accionesAyudaSupervisor.contains(accion);
       final notifId = switch (accion) {
         'solicitud_material' => 42,
+        'material_asignada' => 46,
+        'material_llego' => 47,
+        'pin_intercambio' => 50,
         'guia_firmada_bodega' => 45,
         'traspaso_bodega' => 44,
         'solicitud_ayuda' => 48,
@@ -252,6 +258,9 @@ class MaterialAlertaBackground {
 
   static String _tituloDefault(String accion) => switch (accion) {
         'solicitud_material' => '¡Solicitud de material!',
+        'material_asignada' => '¡Material en camino!',
+        'material_llego' => '¡Tu material llegó!',
+        'pin_intercambio' => 'Tu PIN de confirmación',
         'guia_firmada_bodega' => 'Guía firmada — revisar bodega',
         'traspaso_bodega' => 'Nuevo traspaso en bodega',
         'solicitud_ayuda' => '¡Solicitud de ayuda en terreno!',
@@ -262,6 +271,9 @@ class MaterialAlertaBackground {
 
   static String _cuerpoDefault(String accion) => switch (accion) {
         'solicitud_material' => 'Un colega necesita material',
+        'material_asignada' => 'Un técnico va en camino con tu material',
+        'material_llego' => 'Firma la guía y dicta tu PIN',
+        'pin_intercambio' => 'Ábrelo en la app y díctaselo al entregador',
         'guia_firmada_bodega' => 'Nueva guía pendiente de confirmar',
         'traspaso_bodega' => 'Hay un traspaso pendiente de aprobación',
         'solicitud_ayuda' => 'Un técnico de tu equipo necesita ayuda',

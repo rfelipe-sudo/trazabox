@@ -14,7 +14,8 @@ class TecnicoOtsDiaScreen extends StatefulWidget {
 
   final String rutTecnico;
   final String nombreTecnico;
-  /// Si es null, se usa la fecha de hoy en formato DD/MM/YY.
+  /// Si es null, se usa la fecha de hoy. Formato ISO yyyy-MM-dd
+  /// (produccion.fecha_trabajo es DATE).
   final String? fechaTrabajo;
 
   @override
@@ -32,7 +33,7 @@ class _TecnicoOtsDiaScreenState extends State<TecnicoOtsDiaScreen> {
     super.initState();
     final n = DateTime.now();
     _fecha = widget.fechaTrabajo ??
-        '${n.day.toString().padLeft(2, '0')}/${n.month.toString().padLeft(2, '0')}/${n.year.toString().substring(2)}';
+        '${n.year}-${n.month.toString().padLeft(2, '0')}-${n.day.toString().padLeft(2, '0')}';
     _cargar();
   }
 

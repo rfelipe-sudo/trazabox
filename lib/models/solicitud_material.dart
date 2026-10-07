@@ -48,6 +48,7 @@ class SolicitudMaterial {
   final double? latEntregador;
   final double? lngEntregador;
   final String? guiaId;
+  final String? pinCodigo;
 
   const SolicitudMaterial({
     required this.id,
@@ -66,6 +67,7 @@ class SolicitudMaterial {
     this.latEntregador,
     this.lngEntregador,
     this.guiaId,
+    this.pinCodigo,
   });
 
   factory SolicitudMaterial.fromMap(Map<String, dynamic> m) =>
@@ -89,6 +91,7 @@ class SolicitudMaterial {
         latEntregador:    (m['lat_entregador'] as num?)?.toDouble(),
         lngEntregador:    (m['lng_entregador'] as num?)?.toDouble(),
         guiaId:           m['guia_id'] as String?,
+        pinCodigo:        m['pin_codigo'] as String?,
       );
 
   SolicitudMaterial copyWith({
@@ -116,5 +119,6 @@ class SolicitudMaterial {
         latEntregador: latEntregador ?? this.latEntregador,
         lngEntregador: lngEntregador ?? this.lngEntregador,
         guiaId: guiaId ?? this.guiaId,
+        pinCodigo: pinCodigo,
       );
 }

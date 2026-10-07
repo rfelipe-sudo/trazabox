@@ -72,11 +72,10 @@ class TecnicoService {
   static Future<TecnicoData?> verificarRegistro() async {
     try {
       final deviceId = await getDeviceId();
-      
-      // Primero verificar en storage local
       final prefs = await SharedPreferences.getInstance();
+
+      // 1. Verificar en storage local (clave legacy tecnico_registrado)
       final tecnicoJson = prefs.getString(_storageKey);
-      
       if (tecnicoJson != null) {
         final tecnico = TecnicoData.fromJson(jsonDecode(tecnicoJson));
         if (tecnico.deviceId == deviceId) {
@@ -84,17 +83,28 @@ class TecnicoService {
           return tecnico;
         }
       }
-      
-      // Simular llamada al backend: GET /tecnico/{device_id}
-      // En producción: final response = await http.get('/tecnico/$deviceId');
-      if (_mockDatabase.containsKey(deviceId)) {
-        final tecnico = _mockDatabase[deviceId]!;
-        // Guardar en storage local para próximas consultas
+
+      // 2. Fallback: reconstruir desde claves guardadas por RegistroRutScreen
+      //    (rut_tecnico / user_rut / user_nombre / user_rol)
+      final rutTecnico = prefs.getString('rut_tecnico') ??
+          prefs.getString('user_rut') ??
+          '';
+      if (rutTecnico.isNotEmpty) {
+        final nombre = prefs.getString('user_nombre') ??
+            prefs.getString('nombre_tecnico') ??
+            '';
+        final rol = prefs.getString('user_rol') ?? 'tecnico';
+        final tecnico = TecnicoData(
+          deviceId: deviceId,
+          nombre: nombre,
+          rol: rol,
+          rutCuerpo: rutTecnico,
+        );
         await _guardarEnLocal(tecnico);
-        print('✅ Técnico encontrado en servidor: ${tecnico.nombre}');
+        print('✅ Técnico reconstruido desde prefs: $nombre ($rutTecnico)');
         return tecnico;
       }
-      
+
       print('❌ Dispositivo no registrado: $deviceId');
       return null;
     } catch (e) {

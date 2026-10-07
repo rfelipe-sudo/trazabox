@@ -1,5 +1,6 @@
 package com.traza.trazabox
 
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
@@ -22,6 +23,7 @@ class MainActivity : FlutterActivity() {
 
     private var navChannel: MethodChannel? = null
     private var llegadaPlayer: MediaPlayer? = null
+    private var launcherMethodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -42,8 +44,8 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, launcherChannel)
-            .setMethodCallHandler { call, result ->
+        launcherMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, launcherChannel)
+        launcherMethodChannel!!.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "isInstalled" -> {
                         val pkg = call.arguments as? String ?: ""
@@ -85,6 +87,24 @@ class MainActivity : FlutterActivity() {
                             result.error("INSTALL_ERROR", e.message, null)
                         }
                     }
+                    "openAppTecnicoWebView" -> {
+                        val args = call.arguments as? Map<*, *> ?: emptyMap<String, String>()
+                        val url = args["url"]?.toString() ?: ""
+                        val username = args["username"]?.toString()
+                        val password = args["password"]?.toString()
+                        if (url.isBlank()) {
+                            result.error("NO_URL", "URL requerida", null)
+                        } else {
+                            val intent = Intent(this, AppTecnicoActivity::class.java)
+                            intent.putExtra(AppTecnicoActivity.EXTRA_URL, url)
+                            if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
+                                intent.putExtra(AppTecnicoActivity.EXTRA_AUTO_USERNAME, username)
+                                intent.putExtra(AppTecnicoActivity.EXTRA_AUTO_PASSWORD, password)
+                            }
+                            startActivityForResult(intent, REQ_APP_TECNICO)
+                            result.success(null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -106,6 +126,15 @@ class MainActivity : FlutterActivity() {
                     }
                     "playAyuda" -> {
                         MaterialAlertNotifier.playAyudaFromDart(this)
+                        result.success(null)
+                    }
+                    "playComunicado" -> {
+                        try {
+                            val mp = MediaPlayer.create(this, R.raw.alerta_supervisor)
+                            mp?.setOnCompletionListener { it.release() }
+                            mp?.start()
+                        } catch (_: Exception) {
+                        }
                         result.success(null)
                     }
                     "playMaterialLlegada" -> {
@@ -182,5 +211,21 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         AppVisibility.activityResumed = true
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_APP_TECNICO) {
+            if (resultCode == AppTecnicoActivity.RESULT_CREDENTIALS_ERROR) {
+                launcherMethodChannel?.invokeMethod("credentialsError", null)
+            } else {
+                launcherMethodChannel?.invokeMethod("appTecnicoClosed", null)
+            }
+        }
+    }
+
+    companion object {
+        private const val REQ_APP_TECNICO = 9001
     }
 }

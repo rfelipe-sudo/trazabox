@@ -9,10 +9,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:trazabox/config/constants.dart';
 import 'package:trazabox/constants/map_styles.dart';
 import 'package:trazabox/models/solicitud_material.dart';
 import 'package:trazabox/screens/entrega_en_camino_screen.dart';
-import 'package:trazabox/screens/guia_entrega_screen.dart';
+import 'package:trazabox/screens/historial_transferencias_screen.dart';
 import 'package:trazabox/services/material_solicitud_service.dart';
 
 class SolicitudMaterialScreen extends StatefulWidget {
@@ -23,7 +24,8 @@ class SolicitudMaterialScreen extends StatefulWidget {
       _SolicitudMaterialScreenState();
 }
 
-class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
+class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen>
+    with WidgetsBindingObserver {
   static const Color _bg      = Color(0xFF0A1628);
   static const Color _surface = Color(0xFF0D1B2A);
   static const Color _accent  = Color(0xFF00D9FF);
@@ -61,6 +63,8 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
 
   // ── Timer de 10 minutos ──────────────────────────────────────
   Timer? _timer10min;
+  String? _pinMostrado;
+  bool _pinDialogAbierto = false;
 
   final _db      = Supabase.instance.client;
   final _service = MaterialSolicitudService();
@@ -68,17 +72,30 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _crearIconos();
     _init();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _subPropia?.cancel();
     _subDestinatarios?.cancel();
     _timer10min?.cancel();
     _mapController?.dispose();
     super.dispose();
+  }
+
+  /// Al volver la app a primer plano, re-suscribe los streams: la
+  /// re-suscripción trae el estado actual de inmediato (snapshot inicial),
+  /// así que cualquier cambio ocurrido con la app de fondo se recupera
+  /// sin polling.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !mounted) return;
+    if (_miSolicitud != null) _suscribirSolicitudPropia();
+    _suscribirCercanas();
   }
 
   // ── Iconos canvas para marcadores ────────────────────────────
@@ -139,7 +156,7 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
         .from('solicitudes_material')
         .select()
         .eq('rut_solicitante', _rut!)
-        .inFilter('estado', ['pendiente', 'aceptada', 'en_guia'])
+        .inFilter('estado', ['pendiente', 'aceptada', 'en_guia', 'firmada'])
         .order('created_at', ascending: false)
         .limit(1);
 
@@ -177,17 +194,95 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
         .eq('id', _miSolicitud!.id)
         .listen((rows) {
       if (rows.isEmpty || !mounted) return;
-      final updated =
-          SolicitudMaterial.fromMap(rows.first as Map<String, dynamic>);
-      setState(() => _miSolicitud = updated);
-
-      if (updated.estado != 'pendiente') {
-        _timer10min?.cancel();
-      }
-      if (updated.estado == 'en_guia' && updated.guiaId != null) {
-        _abrirGuia(updated);
-      }
+      _procesarSolicitudPropia(
+          SolicitudMaterial.fromMap(rows.first as Map<String, dynamic>));
     });
+  }
+
+  void _procesarSolicitudPropia(SolicitudMaterial updated) {
+    final estadoAnterior = _miSolicitud?.estado;
+    setState(() => _miSolicitud = updated);
+
+    if (updated.estado != 'pendiente') {
+      _timer10min?.cancel();
+    }
+    if (updated.estado == 'aceptada' && estadoAnterior == 'pendiente') {
+      _snack('${updated.nombreEntregador ?? "Un técnico"} aceptó tu '
+          'solicitud y va en camino');
+    }
+    // PIN de confirmación: ambas firmas van en el teléfono del
+    // entregador; aquí solo se muestra el PIN para dictárselo.
+    final pin = updated.pinCodigo;
+    if (pin != null && pin.isNotEmpty && pin != _pinMostrado) {
+      _pinMostrado = pin;
+      _mostrarPinDialog(pin);
+    }
+    // Solicitud terminada (cancelada o completada): volver al inicio.
+    if (updated.estado == 'cancelada' || updated.estado == 'completada') {
+      _subPropia?.cancel();
+      _cerrarPinDialogSiAbierto();
+      if (updated.estado == 'completada') {
+        _snack('✔ Entrega completada y confirmada en bodega');
+      }
+      setState(() => _miSolicitud = null);
+    }
+  }
+
+  void _mostrarPinDialog(String pin) {
+    if (_pinDialogAbierto || !mounted) return;
+    _pinDialogAbierto = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: _border)),
+        title: const Row(children: [
+          Icon(Icons.lock_outline, color: _accent, size: 22),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text('Tu PIN de confirmación',
+                style: TextStyle(color: Colors.white, fontSize: 16)),
+          ),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+            'Díselo al técnico que te entregó el material:',
+            style: TextStyle(color: _textDim, fontSize: 13),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          Text(pin,
+              style: const TextStyle(
+                  color: _accent,
+                  fontSize: 48,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 8)),
+          const SizedBox(height: 8),
+          const Text('Válido por 15 minutos',
+              style: TextStyle(color: _textDim, fontSize: 11)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _pinDialogAbierto = false;
+              Navigator.pop(context);
+            },
+            child: const Text('Cerrar',
+                style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    ).then((_) => _pinDialogAbierto = false);
+  }
+
+  void _cerrarPinDialogSiAbierto() {
+    if (_pinDialogAbierto && mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+      _pinDialogAbierto = false;
+    }
   }
 
   void _suscribirCercanas() {
@@ -206,6 +301,10 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
           .toList();
       debugPrint('🟢 [SolicitudMat] de otros técnicos: ${todas.length}');
       final filtradas = todas.where((s) {
+        if (!kMaterialFiltroDistanciaActivo) {
+          debugPrint('   ↳ filtro distancia desactivado → incluida: ${s.id}');
+          return true;
+        }
         if (_posicion == null ||
             s.latSolicitante == null ||
             s.lngSolicitante == null) {
@@ -214,8 +313,8 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
         }
         final km = _distanciaKm(_posicion!.latitude, _posicion!.longitude,
             s.latSolicitante!, s.lngSolicitante!);
-        debugPrint('   ↳ ${s.nombreSolicitante} @ ${km.toStringAsFixed(2)} km → ${km <= 5.0 ? "INCLUIDA" : "descartada"}');
-        return km <= 5.0;
+        debugPrint('   ↳ ${s.nombreSolicitante} @ ${km.toStringAsFixed(2)} km → ${km <= kMaterialRadioKm ? "INCLUIDA" : "descartada"}');
+        return km <= kMaterialRadioKm;
       }).toList();
       debugPrint('🟢 [SolicitudMat] cercanas finales: ${filtradas.length}');
       setState(() => _cercanas = filtradas);
@@ -316,26 +415,41 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
 
       if (!mounted) return;
 
-      if (resultadoRadio.sinDestinatarios && resultadoRadio.keplerDisponible) {
-        final ampliar = await _ofrecerAmpliarBusquedaMaterial();
-        if (!mounted) return;
-        if (ampliar) {
-          final resultadoPlantel = await _service.notificarDestinatarios(
-            solicitudId: sol.id,
-            tipoMaterial: sol.tipoMaterial,
-            latSolicitante: sol.latSolicitante,
-            lngSolicitante: sol.lngSolicitante,
-            rutSolicitante: _rut!,
-            soloRadio5Km: false,
-          );
+      if (resultadoRadio.cantidad > 0) {
+        _snack(
+          'Solicitud enviada a ${resultadoRadio.cantidad} '
+          'técnico${resultadoRadio.cantidad == 1 ? '' : 's'} con stock',
+        );
+      } else if (resultadoRadio.sinDestinatarios &&
+          resultadoRadio.keplerDisponible) {
+        if (!kMaterialFiltroDistanciaActivo) {
+          // Sin filtro de distancia la primera búsqueda ya cubrió todo el
+          // plantel: no tiene sentido ofrecer "ampliar". La solicitud queda
+          // activa y visible igual — no es un fracaso definitivo.
+          _snack('Aún no se notificó a ningún técnico con stock — tu '
+              'solicitud queda activa y visible para los técnicos');
+        } else {
+          final ampliar = await _ofrecerAmpliarBusquedaMaterial();
           if (!mounted) return;
-          if (resultadoPlantel.cantidad > 0) {
-            _snack(
-              'Solicitud enviada a ${resultadoPlantel.cantidad} '
-              'técnico${resultadoPlantel.cantidad == 1 ? '' : 's'} del plantel',
+          if (ampliar) {
+            final resultadoPlantel = await _service.notificarDestinatarios(
+              solicitudId: sol.id,
+              tipoMaterial: sol.tipoMaterial,
+              latSolicitante: sol.latSolicitante,
+              lngSolicitante: sol.lngSolicitante,
+              rutSolicitante: _rut!,
+              soloRadio5Km: false,
             );
-          } else {
-            _snack('No hay técnicos con stock disponible en el plantel');
+            if (!mounted) return;
+            if (resultadoPlantel.cantidad > 0) {
+              _snack(
+                'Solicitud enviada a ${resultadoPlantel.cantidad} '
+                'técnico${resultadoPlantel.cantidad == 1 ? '' : 's'} del plantel',
+              );
+            } else {
+              _snack('Aún no se notificó a ningún técnico con stock — tu '
+                  'solicitud queda activa y visible para los técnicos');
+            }
           }
         }
       }
@@ -502,21 +616,6 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
     }
   }
 
-  void _abrirGuia(SolicitudMaterial sol) {
-    Navigator.push<void>(
-      context,
-      MaterialPageRoute<void>(
-        builder: (_) => GuiaEntregaScreen(
-          solicitud:    sol,
-          esEntregador: false,
-          rutPropio:    _rut!,
-          nombrePropio: _nombre ?? '',
-          posicion:     _posicion,
-        ),
-      ),
-    );
-  }
-
   Future<void> _cancelar() async {
     if (_miSolicitud == null) return;
     _timer10min?.cancel();
@@ -577,7 +676,63 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
             const SizedBox(height: 12),
             _buildFormulario(),
           ],
+
+          // ── Historial de transferencias (traspasos + guías) ──
+          const SizedBox(height: 20),
+          _buildCardHistorial(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCardHistorial() {
+    return InkWell(
+      onTap: _rut == null
+          ? null
+          : () => Navigator.push<void>(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      HistorialTransferenciasScreen(rut: _rut!),
+                ),
+              ),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _border),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _accent.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child:
+                const Icon(Icons.history, color: _accent, size: 22),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Historial de transferencias',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14)),
+                SizedBox(height: 2),
+                Text('Traspasos realizados por mes y guías de respaldo',
+                    style: TextStyle(color: _textDim, fontSize: 12)),
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right, color: _textDim, size: 20),
+        ]),
       ),
     );
   }
@@ -945,9 +1100,14 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
           Icons.directions_walk
         ),
       'en_guia' => (
-          'Listo para firmar guía',
+          'Firmando guía en el teléfono del entregador',
           _accent,
           Icons.draw_outlined
+        ),
+      'firmada' => (
+          'Guía firmada — dicta tu PIN al entregador',
+          _orange,
+          Icons.lock_outline
         ),
       _ => ('Estado: ${sol.estado}', _textDim, Icons.info_outline),
     };
@@ -974,17 +1134,63 @@ class _SolicitudMaterialScreenState extends State<SolicitudMaterialScreen> {
         const SizedBox(height: 12),
         _fila('Material', sol.tipoMaterial),
         _fila('Cantidad', '${sol.cantidad}'),
-        const SizedBox(height: 12),
-        if (sol.estado == 'en_guia')
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () => _abrirGuia(sol),
-              icon: const Icon(Icons.draw_outlined, size: 16),
-              label: const Text('Firmar guía'),
-              style: FilledButton.styleFrom(backgroundColor: _accent),
-            ),
-          ),
+
+        // ── Seguimiento tipo Uber: distancia y ETA en vivo ──
+        // (lat/lng_entregador se actualiza cada 10 s por realtime)
+        if (sol.estado == 'aceptada' &&
+            sol.latEntregador != null &&
+            sol.lngEntregador != null &&
+            _posicion != null) ...[
+          const SizedBox(height: 12),
+          Builder(builder: (_) {
+            final km = _distanciaKm(
+              _posicion!.latitude,
+              _posicion!.longitude,
+              sol.latEntregador!,
+              sol.lngEntregador!,
+            );
+            final distLabel = km < 1
+                ? '${(km * 1000).round()} m'
+                : '${km.toStringAsFixed(1)} km';
+            final etaMin = (km * 1000 / 500).ceil().clamp(1, 999);
+            final cerca = km * 1000 < 300;
+            return Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: _green.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border:
+                    Border.all(color: _green.withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                Icon(cerca ? Icons.place : Icons.route,
+                    color: _green, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          cerca
+                              ? '¡Está llegando!'
+                              : 'A $distLabel de distancia',
+                          style: const TextStyle(
+                              color: _green,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13),
+                        ),
+                        if (!cerca)
+                          Text('Llega en ~$etaMin min',
+                              style: const TextStyle(
+                                  color: _textDim, fontSize: 11)),
+                      ]),
+                ),
+              ]),
+            );
+          }),
+        ],
       ]),
     );
   }

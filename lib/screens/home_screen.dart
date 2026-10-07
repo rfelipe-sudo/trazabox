@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:trazabox/constants/app_colors.dart';
+import 'package:trazabox/services/tecnico_ubicacion_service.dart';
 import 'package:trazabox/models/alerta.dart';
 import 'package:trazabox/models/solicitud_ayuda.dart';
 import 'package:trazabox/models/usuario.dart';
@@ -20,16 +21,23 @@ import 'package:trazabox/screens/supervisor/mi_equipo_screen.dart';
 import 'package:trazabox/screens/ayuda_terreno_screen.dart';
 import 'package:trazabox/screens/supervisor/solicitudes_ayuda_screen.dart';
 import 'package:trazabox/screens/supervisor/mi_actividad_screen.dart';
+import 'package:trazabox/screens/mis_actividades_screen.dart';
+import 'package:trazabox/screens/solicitud_material_screen.dart';
+import 'package:trazabox/services/app_tecnico_open_service.dart';
 import 'package:trazabox/services/auth_service.dart';
 import 'package:trazabox/services/ayuda_service.dart';
 import 'package:trazabox/services/estado_supervisor_service.dart';
 import 'package:trazabox/services/deteccion_caminata_service.dart';
 import 'package:trazabox/services/update_service.dart';
 import 'package:trazabox/widgets/update_dialog.dart';
+import 'package:trazabox/services/comunicado_service.dart';
+import 'package:trazabox/services/logistica_service.dart';
+import 'package:trazabox/screens/comunicado_lectura_screen.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -44,6 +52,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   bool _puedeVerEquipo = false;
   bool _tieneAyudaPendiente = false;
   Future<List<Map<String, dynamic>>>? _historialAtencionFuture;
+  int _comunicadosSinLeer = 0;
 
   @override
   void initState() {
@@ -59,8 +68,43 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     // Verificar si puede ver equipo
     _checkPuedeVerEquipo();
     _checkAyudaPendiente();
-    
+    _cargarComunicadosSinLeer();
+
+    // Publicar ubicación (tracking tipo Uber): habilita el matching de
+    // solicitudes de material — sin esto nadie recibe notificaciones.
+    TecnicoUbicacionService.start();
+
     // AlertasCTOService DESACTIVADO — polling de desconexiones suspendido en TrazaBox
+  }
+
+  Future<void> _cargarComunicadosSinLeer() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rut = prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
+      if (rut.isEmpty) return;
+      final pendiente = await ComunicadoService.instance.obtenerPendiente(rut);
+      if (!mounted) return;
+      setState(() => _comunicadosSinLeer = pendiente != null ? 1 : 0);
+    } catch (_) {}
+  }
+
+  Future<void> _abrirBuzon() async {
+    final prefs = await SharedPreferences.getInstance();
+    final rut = prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0D1B2A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _BuzonComunicados(rut: rut, onLeido: () {
+        _cargarComunicadosSinLeer();
+      }),
+    );
+    _cargarComunicadosSinLeer();
   }
 
   @override
@@ -79,6 +123,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     // No re-iniciar en cada resume: puede causar loops y pérdida de conexión.
     // El canal global se inicia una vez en initState.
+
+    // Refrescar ubicación al volver a primer plano (mantiene vigente el
+    // GPS para el matching de material sin polling en background).
+    if (state == AppLifecycleState.resumed) {
+      TecnicoUbicacionService.start();
+    }
   }
 
   Future<void> _detenerAlarmas() async {
@@ -145,59 +195,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
-  Future<void> _buscarActualizacion() async {
-    if (!mounted) return;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => PopScope(
-        canPop: false,
-        child: Material(
-          color: Colors.black54,
-          child: Center(
-            child: const CircularProgressIndicator(
-              color: Color(0xFF00D9FF),
-            ),
-          ),
-        ),
-      ),
-    );
-    try {
-      final result = await UpdateService.checkForUpdate();
-      if (mounted) Navigator.of(context).pop();
-      if (!mounted) return;
-
-      if (result is UpdateCheckUpToDate) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ La app está actualizada')),
-        );
-      } else if (result is UpdateCheckNoConnection) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('❌ Sin conexión a internet')),
-        );
-      } else if (result is UpdateCheckAvailable) {
-        await showDialog<void>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => UpdateRequiredDialog(
-            displayVersion: result.displayVersion,
-            downloadUrl: result.downloadUrl,
-          ),
-        );
-      } else if (result is UpdateCheckError) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo verificar: ${result.message}')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo verificar: $e')),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -360,20 +357,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
             ],
           ),
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          onPressed: () {
-            final alertas = context.read<AlertasProvider>();
-            final auth = context.read<AuthProvider>();
-            if (auth.usuario != null) {
-              alertas.cargarAlertas(auth.usuario!);
-            }
-          },
-        ),
-        IconButton(
-          icon: const Icon(Icons.system_update),
-          tooltip: 'Buscar actualización',
-          onPressed: _buscarActualizacion,
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.inbox_rounded),
+              tooltip: 'Comunicados',
+              onPressed: _abrirBuzon,
+            ),
+            if (_comunicadosSinLeer > 0)
+              Positioned(
+                top: 6,
+                right: 6,
+                child: Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF00BCD4),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+          ],
         ),
         IconButton(
           icon: const Icon(Icons.logout),
@@ -467,6 +472,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     // Para supervisores: ocultar cards grises (próximamente), solo mostrar habilitadas
     final children = <Widget>[
       _buildActionButton(
+        icon: Icons.calendar_month,
+        label: 'Mis\nActividades',
+        color: const Color(0xFF3B82F6),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+        ),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const MisActividadesScreen()),
+        ),
+      ),
+      _buildActionButton(
+        icon: Icons.phone_android,
+        label: 'App\nTécnico',
+        color: const Color(0xFFE30613),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFE30613), Color(0xFFB8050F)],
+        ),
+        onTap: () => AppTecnicoOpenService.instance.openFromHome(context),
+      ),
+      _buildActionButton(
         icon: Icons.router,
         label: 'Asistente\nde CTO',
         color: const Color(0xFF00D9FF),
@@ -487,6 +512,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         onTap: () {
           Navigator.of(context).pushNamed('/asistente-crea-terreno');
         },
+      ),
+      _buildActionButton(
+        icon: Icons.swap_horiz,
+        label: 'Solicitar\nMaterial',
+        color: const Color(0xFF16A34A),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF16A34A), Color(0xFF0B7A55)],
+        ),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const SolicitudMaterialScreen()),
+        ),
       ),
       if (!_puedeVerEquipo)
         _buildActionButton(
@@ -1127,5 +1163,271 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         },
       ),
     );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Buzón de comunicados (bottom sheet)
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _BuzonComunicados extends StatefulWidget {
+  const _BuzonComunicados({required this.rut, required this.onLeido});
+  final String rut;
+  final VoidCallback onLeido;
+
+  @override
+  State<_BuzonComunicados> createState() => _BuzonComunicadosState();
+}
+
+class _BuzonComunicadosState extends State<_BuzonComunicados> {
+  final _db = Supabase.instance.client;
+  bool _cargando = true;
+  List<Map<String, dynamic>> _comunicados = [];
+  Set<String> _leidos = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _cargar();
+  }
+
+  Future<void> _cargar() async {
+    setState(() => _cargando = true);
+    try {
+      final canon = LogisticaService.canonicalRut(widget.rut);
+
+      final comunicados = await _db
+          .from('comunicados_traza')
+          .select()
+          .eq('activo', true)
+          .order('created_at', ascending: false);
+
+      final lecturas = await _db
+          .from('comunicados_lecturas')
+          .select('comunicado_id, rut_tecnico')
+          .eq('estado', 'leido');
+
+      final leidos = <String>{};
+      for (final row in lecturas as List) {
+        final m = Map<String, dynamic>.from(row as Map);
+        if (LogisticaService.sameRut(m['rut_tecnico']?.toString() ?? '', canon)) {
+          final id = m['comunicado_id'] as String?;
+          if (id != null) leidos.add(id);
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _comunicados = (comunicados as List)
+            .map((r) => Map<String, dynamic>.from(r as Map))
+            .toList();
+        _leidos = leidos;
+        _cargando = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _cargando = false);
+    }
+  }
+
+  Future<void> _abrirComunicado(Map<String, dynamic> c) async {
+    final id = c['id'] as String? ?? '';
+    if (_leidos.contains(id)) return;
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => ComunicadoLecturaScreen(comunicado: c),
+      ),
+    );
+    widget.onLeido();
+    _cargar();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final noLeidos = _comunicados.where((c) => !_leidos.contains(c['id'])).length;
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.55,
+      minChildSize: 0.35,
+      maxChildSize: 0.85,
+      builder: (_, ctrl) => Column(
+        children: [
+          // Handle + encabezado
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+            child: Column(
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    const Icon(Icons.inbox_rounded, color: Color(0xFF00BCD4), size: 22),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'Comunicados',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (noLeidos > 0)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00BCD4),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '$noLeidos sin leer',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, color: Colors.white38, size: 20),
+                      onPressed: _cargar,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+                const Divider(color: Colors.white12, height: 16),
+              ],
+            ),
+          ),
+          // Lista
+          Expanded(
+            child: _cargando
+                ? const Center(child: CircularProgressIndicator(color: Color(0xFF00BCD4)))
+                : _comunicados.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'No hay comunicados',
+                          style: TextStyle(color: Colors.white38),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: ctrl,
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        itemCount: _comunicados.length,
+                        itemBuilder: (_, i) {
+                          final c = _comunicados[i];
+                          final id = c['id'] as String? ?? '';
+                          final leido = _leidos.contains(id);
+                          final titulo = c['titulo'] as String? ?? 'Comunicado';
+                          final fecha = _formatFecha(c['created_at'] as String?);
+
+                          return GestureDetector(
+                            onTap: leido ? null : () => _abrirComunicado(c),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: leido
+                                    ? const Color(0xFF0D1B2A)
+                                    : const Color(0xFF0D2A3A),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: leido
+                                      ? Colors.white12
+                                      : const Color(0xFF00BCD4).withValues(alpha: 0.5),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    leido
+                                        ? Icons.mark_email_read_outlined
+                                        : Icons.mark_email_unread_outlined,
+                                    color: leido
+                                        ? Colors.white24
+                                        : const Color(0xFF00BCD4),
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          titulo,
+                                          style: TextStyle(
+                                            color: leido
+                                                ? Colors.white38
+                                                : Colors.white,
+                                            fontWeight: leido
+                                                ? FontWeight.normal
+                                                : FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          fecha,
+                                          style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (!leido)
+                                    const Icon(
+                                      Icons.chevron_right,
+                                      color: Color(0xFF00BCD4),
+                                      size: 18,
+                                    ),
+                                  if (leido)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green.withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text(
+                                        'LEÍDO',
+                                        style: TextStyle(
+                                          color: Colors.green,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatFecha(String? iso) {
+    if (iso == null) return '';
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}  ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return '';
+    }
   }
 }

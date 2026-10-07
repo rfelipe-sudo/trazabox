@@ -3201,12 +3201,23 @@ class ProduccionService {
     try {
       final ruts = rutVariantes(rutTecnico);
       if (ruts.isEmpty) return [];
+
+      // produccion.fecha_trabajo es DATE (yyyy-MM-dd). Si llega en formato
+      // legacy dd/MM/yy o dd.MM.yy, se convierte a ISO.
+      var fechaIso = fechaTrabajo;
+      final legacy =
+          RegExp(r'^(\d{2})[/.](\d{2})[/.](\d{2})$').firstMatch(fechaTrabajo);
+      if (legacy != null) {
+        fechaIso =
+            '20${legacy.group(3)}-${legacy.group(2)}-${legacy.group(1)}';
+      }
+
       final resp = await _supabase
           .from('produccion')
           .select()
           .eq('estado', 'Completado')
           .inFilter('rut_tecnico', ruts)
-          .eq('fecha_trabajo', fechaTrabajo);
+          .eq('fecha_trabajo', fechaIso);
       final lista = (resp as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
