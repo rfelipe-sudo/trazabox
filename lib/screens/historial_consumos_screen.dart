@@ -3,15 +3,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/traza_consumo_service.dart';
 
-// ── Paleta oscura del módulo historial (diseño "C" aprobado 2026-08-25) ──────
-const _bgDark = Color(0xFF101815);
-const _cardDark = Color(0xFF18231E);
-const _borderDark = Color(0xFF24312B);
-const _accent = Color(0xFF2DD894);
-const _accentDim = Color(0xFF123527);
-const _textPrim = Color(0xFFEAF4EF);
-const _textSec = Color(0xFF7E938A);
-const _textCap = Color(0xFF6B7F76);
+// ── Paleta oscura del módulo historial: azul y blanco (misma base del home) ──
+const _bgDark = Color(0xFF0A1628);
+const _cardDark = Color(0xFF12213A);
+const _borderDark = Color(0xFF1E3A5F);
+const _accent = Color(0xFF3B82F6);
+const _accentDim = Color(0xFF0F2A4D);
+const _textPrim = Color(0xFFFFFFFF);
+const _textSec = Color(0xFF94A3B8);
+const _textCap = Color(0xFF7C8DA6);
 
 const _nombresMesHist = [
   '', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -42,18 +42,9 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
   bool _cargando = true;
   String? _error;
 
+  /// Últimos meses (más reciente primero) con sus órdenes consumidas.
   List<ResumenMesConsumo> _resumen = [];
-  late int _mesSel = widget.mes;
-  late int _annoSel = widget.anno;
-
   final Map<String, List<ConsumoDeclarado>> _cachePorMes = {};
-  bool _cargandoMes = false;
-
-  List<ConsumoDeclarado> get _consumosMesSel =>
-      _cachePorMes['$_annoSel-$_mesSel'] ?? const [];
-
-  /// Máximo de órdenes entre los 6 meses (para el anillo proporcional).
-  int get _maxOrdenes => _resumen.fold(0, (m, r) => r.ordenes > m ? r.ordenes : m);
 
   @override
   void initState() {
@@ -75,46 +66,29 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
       _rut = rut;
 
       final resumen = await _service.resumenConsumosUltimosMeses(rut);
+      // Órdenes de todos los meses con consumos, en paralelo
+      final listas = await Future.wait(resumen.map((r) async {
+        if (r.ordenes == 0) return const <ConsumoDeclarado>[];
+        try {
+          return await _service.obtenerConsumosMes(rut, mes: r.mes, anno: r.anno);
+        } catch (_) {
+          return const <ConsumoDeclarado>[];
+        }
+      }));
       if (!mounted) return;
       setState(() {
         _resumen = resumen;
+        _cachePorMes.clear();
+        for (var i = 0; i < resumen.length; i++) {
+          _cachePorMes['${resumen[i].anno}-${resumen[i].mes}'] = listas[i];
+        }
         _cargando = false;
       });
-      await _cargarMes(_mesSel, _annoSel);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.toString().replaceFirst('Exception: ', '');
         _cargando = false;
-      });
-    }
-  }
-
-  Future<void> _cargarMes(int mes, int anno) async {
-    final rut = _rut;
-    if (rut == null) return;
-
-    setState(() {
-      _mesSel = mes;
-      _annoSel = anno;
-    });
-
-    if (_cachePorMes.containsKey('$anno-$mes')) return;
-
-    setState(() => _cargandoMes = true);
-    try {
-      final consumos =
-          await _service.obtenerConsumosMes(rut, mes: mes, anno: anno);
-      if (!mounted) return;
-      setState(() {
-        _cachePorMes['$anno-$mes'] = consumos;
-        _cargandoMes = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _cachePorMes['$anno-$mes'] = const [];
-        _cargandoMes = false;
       });
     }
   }
@@ -153,12 +127,7 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
           ? const Center(child: CircularProgressIndicator(color: _accent))
           : _error != null
               ? _buildError()
-              : Column(
-                  children: [
-                    _buildMesesStrip(),
-                    Expanded(child: _buildListaMes()),
-                  ],
-                ),
+              : _buildHistorial(),
     );
   }
 
@@ -189,106 +158,30 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
   }
 
   /// Cards horizontales de los últimos 6 meses, con anillo de progreso.
-  Widget _buildMesesStrip() {
-    return SizedBox(
-      height: 148,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
-        itemCount: _resumen.length,
-        itemBuilder: (_, i) {
-          final r = _resumen[i];
-          final sel = r.mes == _mesSel && r.anno == _annoSel;
-          final progreso =
-              _maxOrdenes > 0 ? r.ordenes / _maxOrdenes : 0.0;
+  Widget _buildHistorial() {
+    final meses = _resumen
+        .where((r) => (_cachePorMes['${r.anno}-${r.mes}'] ?? const []).isNotEmpty)
+        .toList()
+      ..sort((a, b) => (b.anno * 100 + b.mes).compareTo(a.anno * 100 + a.mes));
 
-          return GestureDetector(
-            onTap: () => _cargarMes(r.mes, r.anno),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: 122,
-              margin: const EdgeInsets.only(right: 10),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: _cardDark,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: sel ? _accent : _borderDark,
-                  width: sel ? 1.6 : 1,
-                ),
-                boxShadow: sel
-                    ? [
-                        BoxShadow(
-                          color: _accent.withValues(alpha: 0.25),
-                          blurRadius: 14,
-                          spreadRadius: 1,
-                        )
-                      ]
-                    : null,
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    '${_nombresMesHist[r.mes].toUpperCase()} ${r.anno % 100}',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.1,
-                      color: sel ? _accent : _textSec,
-                    ),
-                  ),
-                  const SizedBox(height: 9),
-                  _AnilloProgreso(
-                    progreso: progreso,
-                    activo: sel || r.ordenes > 0,
-                    child: Text(
-                      '${r.ordenes}',
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: _textPrim,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${r.materiales} materiales',
-                    style: const TextStyle(fontSize: 9.5, color: _textCap),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildListaMes() {
-    if (_cargandoMes) {
-      return const Center(child: CircularProgressIndicator(color: _accent));
-    }
-
-    final consumos = _consumosMesSel;
-    if (consumos.isEmpty) {
-      return Center(
+    if (meses.isEmpty) {
+      return const Center(
         child: Padding(
-          padding: const EdgeInsets.all(32),
+          padding: EdgeInsets.all(32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.history, color: _textSec, size: 56),
-              const SizedBox(height: 16),
+              Icon(Icons.history, color: _textSec, size: 56),
+              SizedBox(height: 16),
               Text(
-                'Sin consumos en ${_nombresMesHist[_mesSel]}',
-                style: const TextStyle(
+                'Sin órdenes consumidas',
+                style: TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.bold,
                     color: _textPrim),
               ),
-              const SizedBox(height: 8),
-              const Text(
+              SizedBox(height: 8),
+              Text(
                 'Las órdenes que declares aparecerán aquí con su detalle.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: _textSec, fontSize: 13),
@@ -299,23 +192,63 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
       );
     }
 
-    // Agrupado por fecha de ejecución de la orden (más reciente primero).
-    final porDia = <String, List<ConsumoDeclarado>>{};
-    for (final c in consumos) {
-      porDia.putIfAbsent(_claveDia(c.fechaTrabajo), () => []).add(c);
-    }
-    final dias = porDia.keys.toList()..sort((a, b) => b.compareTo(a));
-
     final items = <Widget>[];
-    for (final dia in dias) {
-      final lista = porDia[dia]!;
-      items.add(_cabeceraDia(dia, lista.length));
-      items.addAll(lista.map(_buildCardConsumo));
+    for (final r in meses) {
+      final consumos = _cachePorMes['${r.anno}-${r.mes}']!;
+      items.add(_cabeceraMes(r, consumos.length));
+
+      // Dentro del mes, agrupado por fecha de ejecución (más reciente primero)
+      final porDia = <String, List<ConsumoDeclarado>>{};
+      for (final c in consumos) {
+        porDia.putIfAbsent(_claveDia(c.fechaTrabajo), () => []).add(c);
+      }
+      final dias = porDia.keys.toList()..sort((a, b) => b.compareTo(a));
+      for (final dia in dias) {
+        final lista = porDia[dia]!;
+        items.add(_cabeceraDia(dia, lista.length));
+        items.addAll(lista.map(_buildCardConsumo));
+      }
     }
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      children: items,
+    return RefreshIndicator(
+      color: _accent,
+      onRefresh: _cargar,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: items,
+      ),
+    );
+  }
+
+  Widget _cabeceraMes(ResumenMesConsumo r, int ordenes) {
+    return Container(
+      margin: const EdgeInsets.only(top: 18, bottom: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: _accent,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.calendar_month, size: 16, color: Colors.white),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${_nombresMesHist[r.mes].toUpperCase()} ${r.anno}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ),
+          Text(
+            '$ordenes ${ordenes == 1 ? 'orden' : 'órdenes'} · ${r.materiales} materiales',
+            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
     );
   }
 
@@ -550,46 +483,6 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')} '
       '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 }
-
-/// Anillo de progreso alrededor del contador de órdenes del mes.
-class _AnilloProgreso extends StatelessWidget {
-  final double progreso;
-  final bool activo;
-  final Widget child;
-
-  const _AnilloProgreso({
-    required this.progreso,
-    required this.activo,
-    required this.child,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 54,
-      height: 54,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox(
-            width: 54,
-            height: 54,
-            child: CircularProgressIndicator(
-              value: progreso.clamp(0.0, 1.0),
-              strokeWidth: 4.5,
-              strokeCap: StrokeCap.round,
-              color: activo ? _accent : _borderDark,
-              backgroundColor: _borderDark,
-            ),
-          ),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-// ── Buscador de series (diseño "A" en oscuro) ───────────────────────────────
 
 /// Busca una serie en TODO el histórico (`equipos_seriados_traza`),
 /// sin límite de mes, con filtro segmentado por tipo de equipo.

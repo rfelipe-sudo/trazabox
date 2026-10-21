@@ -251,7 +251,7 @@ class _ConsumoOrdenesScreenState extends State<ConsumoOrdenesScreen> {
             color: Colors.white.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: const Color(0xFF2DD894).withValues(alpha: 0.5),
+              color: const Color(0xFF3B82F6).withValues(alpha: 0.5),
               width: 1.5,
             ),
           ),
@@ -261,12 +261,12 @@ class _ConsumoOrdenesScreenState extends State<ConsumoOrdenesScreen> {
                 width: 48,
                 height: 48,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF2DD894).withValues(alpha: 0.15),
+                  color: const Color(0xFF3B82F6).withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: const Icon(
                   Icons.history,
-                  color: Color(0xFF2DD894),
+                  color: Color(0xFF3B82F6),
                   size: 26,
                 ),
               ),
@@ -278,7 +278,7 @@ class _ConsumoOrdenesScreenState extends State<ConsumoOrdenesScreen> {
                     Text(
                       'HISTORIAL',
                       style: TextStyle(
-                        color: Color(0xFF2DD894),
+                        color: Color(0xFF3B82F6),
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
                         letterSpacing: 1,
