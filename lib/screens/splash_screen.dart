@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:trazabox/services/update_service.dart';
-import 'package:trazabox/widgets/update_dialog.dart';
 
 // ─── Paleta ──────────────────────────────────────────────────────────────────
 const _bg     = Color(0xFF050810);
@@ -57,6 +56,12 @@ class _SplashScreenState extends State<SplashScreen>
   late final List<AnimationController> _dotPulse;
 
   bool _navegado = false;
+
+  // Actualización automática (mismo flujo que BioBox): descarga e instala sin diálogo.
+  bool _actualizando = false;
+  double _progresoAct = 0;
+  String _etiquetaAct = '';
+  String _mensajeAct = '';
 
   /// Consulta GitHub en paralelo a la animación; antes de /home siempre se espera en _runUpdateGate.
   late Future<UpdateCheckResult> _updateCheckFuture;
@@ -147,18 +152,44 @@ class _SplashScreenState extends State<SplashScreen>
       }
 
       if (result is UpdateCheckAvailable) {
-        // Variable local: dentro del `builder` no aplica la promoción de tipo de `result`.
         final available = result;
-        await showDialog<void>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => UpdateRequiredDialog(
-            displayVersion: available.displayVersion,
-            downloadUrl: available.downloadUrl,
-          ),
-        );
-        if (!mounted) return false;
-        return true;
+        setState(() {
+          _actualizando = true;
+          _progresoAct = 0;
+          _etiquetaAct = 'ACTUALIZANDO ${available.displayVersion}';
+          _mensajeAct = 'Descargando la nueva versión…';
+        });
+        try {
+          await UpdateService().downloadAndInstall(
+            available.downloadUrl,
+            (p) {
+              if (!mounted) return;
+              setState(() => _progresoAct = p.clamp(0.0, 1.0));
+            },
+            onInstalling: () {
+              if (!mounted) return;
+              setState(() {
+                _progresoAct = 1;
+                _mensajeAct = 'Abriendo el instalador del sistema…';
+              });
+            },
+          );
+          if (!mounted) return false;
+          // El instalador de Android quedó abierto; la app se reabre ya actualizada.
+          setState(() {
+            _progresoAct = 1;
+            _mensajeAct = 'Descarga completa. Completa la instalación en la '
+                'pantalla del sistema y vuelve a abrir TrazaBox.';
+          });
+          return false;
+        } catch (e) {
+          if (!mounted) return false;
+          setState(() => _actualizando = false);
+          result = UpdateCheckError(
+            e is StateError ? e.message : e.toString(),
+          );
+          continue;
+        }
       }
 
       final titulo = result is UpdateCheckNoConnection
@@ -346,13 +377,29 @@ class _SplashScreenState extends State<SplashScreen>
 
                   const SizedBox(height: 36),
 
-                  // Barra de progreso
+                  // Barra de progreso (arranque o descarga de actualización)
                   FadeTransition(
                     opacity: _barFadeCtrl,
-                    child: AnimatedBuilder(
-                      animation: _progressAnim,
-                      builder: (_, __) => _ProgressBar(value: _progressAnim.value),
-                    ),
+                    child: _actualizando
+                        ? Column(children: [
+                            _ProgressBar(value: _progresoAct, label: _etiquetaAct),
+                            const SizedBox(height: 14),
+                            SizedBox(
+                              width: 260,
+                              child: Text(
+                                _mensajeAct,
+                                textAlign: TextAlign.center,
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 11,
+                                  color: Colors.white.withOpacity(0.6),
+                                ),
+                              ),
+                            ),
+                          ])
+                        : AnimatedBuilder(
+                            animation: _progressAnim,
+                            builder: (_, __) => _ProgressBar(value: _progressAnim.value),
+                          ),
                   ),
                 ],
               ),
@@ -554,7 +601,8 @@ class _CorpDots extends StatelessWidget {
 // ─── Barra de progreso ────────────────────────────────────────────────────────
 class _ProgressBar extends StatelessWidget {
   final double value;
-  const _ProgressBar({required this.value});
+  final String label;
+  const _ProgressBar({required this.value, this.label = 'INICIANDO SISTEMA'});
 
   @override
   Widget build(BuildContext context) {
@@ -563,9 +611,10 @@ class _ProgressBar extends StatelessWidget {
       width: 210,
       child: Column(children: [
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text('INICIANDO SISTEMA', style: GoogleFonts.jetBrainsMono(
+          Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.jetBrainsMono(
             fontSize: 9, letterSpacing: 1.8,
-            color: Colors.white.withOpacity(0.25))),
+            color: label == 'INICIANDO SISTEMA' ? Colors.white.withOpacity(0.25) : _cyan.withOpacity(0.85)))),
           Text('$pct%', style: GoogleFonts.jetBrainsMono(fontSize: 10, color: _cyan)),
         ]),
         const SizedBox(height: 6),
