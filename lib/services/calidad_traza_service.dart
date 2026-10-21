@@ -87,78 +87,188 @@ class CalidadTrazaService {
 
   // ── Consulta principal ────────────────────────────────────────────────────
 
-  /// Obtiene métricas de calidad para el período.
-  /// total_completadas = produccion si hay datos; si no, calidad_api_script (evita ceros)
-  /// total_reiterados = desde calidad_api_script
+  /// Obtiene métricas de calidad para el período con la lógica del panel
+  /// de remuneraciones (bonos_traza.html), para que "Tu Mes" muestre el
+  /// mismo % de reiteración que el panel.
   Future<Map<String, dynamic>?> obtenerCalidadPorPeriodo(
     String rut,
     String periodoRemuneracion,
   ) async {
     try {
-      final variantes = _rutVariantesCalidad(rut);
-      if (variantes.isEmpty) return null;
-
-      final periodoRem = _periodoCanonicoMmYyyy(periodoRemuneracion);
-      final periodoTrabajo = periodoTrabajoDesdeRemuneracion(periodoRem);
-
-      // 1. Reiterados y detalle — `periodo` en BD = remuneración (Kepler)
-      List<Map<String, dynamic>> ordenes = [];
-      for (final per in {periodoRem, _periodoAlternativo(periodoRem)}) {
-        try {
-          final response = await _supabase
-              .from('calidad_api_script')
-              .select()
-              .inFilter('rut_o_bucket', variantes)
-              .eq('periodo', per)
-              .limit(3000);
-          ordenes = List<Map<String, dynamic>>.from(response as List);
-          if (ordenes.isNotEmpty) break;
-        } catch (_) {}
-      }
-      // Filtrar por mes/año de la fecha de trabajo (no por remuneración en BD).
-      ordenes = _filtrarFilasMesMedicion(ordenes, periodoTrabajo);
-      final completadasCalidad = ordenes
-          .where((o) => o['estado']?.toString() == 'Completado')
-          .length;
-      final reiteradosValidos = ordenes.where((o) => _esReiterado(o['es_reiterado'])).toList();
-
-      // Total: SIEMPRE preferir produccion (mismo que Producción); si 0, usar calidad_api_script
-      final totalProduccion = await _obtenerTotalProduccionMes(rut, periodoTrabajo);
-      final totalCompletadas = totalProduccion > 0 ? totalProduccion : completadasCalidad;
-      if (totalCompletadas == 0) return null;
-
-      final porcentaje = totalCompletadas > 0
-          ? reiteradosValidos.length / totalCompletadas * 100
-          : 0.0;
-
-      double promedioDias = 0;
-      if (reiteradosValidos.isNotEmpty) {
-        double totalDias = 0;
-        int contados = 0;
-        for (final o in reiteradosValidos) {
-          final orig = _parseFecha(o['fecha']?.toString() ?? '');
-          final reit = _parseFecha(o['reiterada_por_fecha']?.toString() ?? '');
-          if (orig != null && reit != null) {
-            totalDias += reit.difference(orig).inDays.toDouble().abs();
-            contados++;
-          }
-        }
-        if (contados > 0) promedioDias = totalDias / contados;
-      }
-
-      return {
-        'periodo': periodoTrabajo,
-        'periodo_remuneracion': periodoRem,
-        'total_completadas': totalCompletadas,
-        'total_reiterados': reiteradosValidos.length,
-        'porcentaje_reiteracion': porcentaje,
-        'promedio_dias': promedioDias,
-        'detalle': reiteradosValidos,
-      };
+      final r = await _calidadPanel(rut, periodoRemuneracion);
+      if (r == null || (r['total_completadas'] as int) == 0) return null;
+      return r;
     } catch (e) {
       print('❌ [CalidadTraza] Error obteniendo calidad: $e');
       return null;
     }
+  }
+
+  /// Cálculo de calidad portado 1:1 del panel (CN y CA comparten esta
+  /// lógica en el panel principal):
+  ///   - `periodo` en calidad_api_script = mes de PAGO (Kepler), pero se
+  ///     filtra por la fecha real de la OT dentro del mes de producción
+  ///     (o hasta el cierre manual de `cierre_periodo_calidad`).
+  ///   - Universo (denominador, en órdenes): Completadas + No Realizadas
+  ///     que en `produccion` estén derivadas a GSA. REDES/REDES NEUTRA se
+  ///     excluyen. Solo filas cuyo `tecnico` contenga "TRAZ".
+  ///   - Reiteradas: `es_reiterado` true, EXCLUYENDO auto-reiteradas
+  ///     (orden == reiterada_por_ot, error Kepler) y reiteradas entre
+  ///     tecnologías distintas (ej. FTTH reiterada por HFC).
+  Future<Map<String, dynamic>?> _calidadPanel(
+    String rut,
+    String periodoRemuneracion,
+  ) async {
+    final variantes = _rutVariantesCalidad(rut);
+    if (variantes.isEmpty) return null;
+
+    final periodoRem = _periodoCanonicoMmYyyy(periodoRemuneracion);
+    final periodoTrabajo = periodoTrabajoDesdeRemuneracion(periodoRem);
+    final (mesProd, annoProd) = _mesAnnoPeriodo(periodoTrabajo);
+    final (mesPago, annoPago) = _mesAnnoPeriodo(periodoRem);
+    if (mesProd < 1 || annoProd < 2000) return null;
+
+    final inicio = DateTime(annoProd, mesProd, 1);
+    var fin = DateTime(annoProd, mesProd + 1, 0, 23, 59, 59);
+
+    // Cierre manual del período (mes_remuneracion 'YYYY-MM')
+    try {
+      final cierre = await _supabase
+          .from('cierre_periodo_calidad')
+          .select('fecha_cierre_calidad')
+          .eq('mes_remuneracion',
+              '$annoPago-${mesPago.toString().padLeft(2, '0')}')
+          .limit(1)
+          .maybeSingle();
+      final fc = cierre?['fecha_cierre_calidad']?.toString();
+      if (fc != null && fc.isNotEmpty) {
+        final d = DateTime.tryParse(fc);
+        if (d != null) fin = DateTime(d.year, d.month, d.day, 23, 59, 59);
+      }
+    } catch (_) {}
+
+    // 1. Filas de calidad del período de pago (Completado + No Realizada)
+    List<Map<String, dynamic>> filas = [];
+    for (final per in {periodoRem, _periodoAlternativo(periodoRem)}) {
+      try {
+        final response = await _supabase
+            .from('calidad_api_script')
+            .select()
+            .inFilter('rut_o_bucket', variantes)
+            .eq('periodo', per)
+            .inFilter('estado', ['Completado', 'No Realizada'])
+            .limit(3000);
+        filas = List<Map<String, dynamic>>.from(response as List);
+        if (filas.isNotEmpty) break;
+      } catch (_) {}
+    }
+
+    // 2. OTs No Realizadas derivadas a GSA (desde produccion, mes de producción)
+    final otGsa = <String>{};
+    try {
+      final rows = await _supabase
+          .from('produccion')
+          .select('orden_trabajo')
+          .inFilter('rut_tecnico', variantes)
+          .eq('estado', 'No Realizada')
+          .eq('area_derivacion', 'GSA')
+          .gte('fecha_trabajo',
+              '$annoProd-${mesProd.toString().padLeft(2, '0')}-01')
+          .lt('fecha_trabajo',
+              '${DateTime(annoProd, mesProd + 1, 1).year}-${DateTime(annoProd, mesProd + 1, 1).month.toString().padLeft(2, '0')}-01')
+          .limit(2000);
+      for (final r in rows as List) {
+        final ot = r['orden_trabajo']?.toString().trim() ?? '';
+        if (ot.isNotEmpty) otGsa.add(ot);
+      }
+    } catch (_) {}
+
+    // 3. Universo válido: fecha dentro del período, GSA si No Realizada, técnico TRAZA
+    final universo = filas.where((t) {
+      final f = _fechaTrabajoDesdeFilaCalidad(t);
+      if (f == null || f.isBefore(inicio) || f.isAfter(fin)) return false;
+      if ((t['estado']?.toString() ?? '') == 'No Realizada') {
+        return otGsa.contains(t['orden_de_trabajo']?.toString().trim());
+      }
+      return true;
+    }).where((t) {
+      final tec = (t['tecnico']?.toString() ?? '').toUpperCase();
+      return tec.contains('TRAZ');
+    }).toList();
+
+    // 4. Tecnología por OT (propia y de la OT que reitera) para excluir
+    //    reiteraciones entre tecnologías distintas
+    final otsConsulta = <String>{};
+    for (final t in universo) {
+      if (!_esReiterado(t['es_reiterado'])) continue;
+      for (final k in ['orden_de_trabajo', 'reiterada_por_ot']) {
+        final v = t[k]?.toString().trim() ?? '';
+        if (v.isNotEmpty) otsConsulta.add(v);
+      }
+    }
+    final tecnoPorOt = <String, String>{};
+    if (otsConsulta.isNotEmpty) {
+      try {
+        final rows = await _supabase
+            .from('produccion')
+            .select('orden_trabajo, tipo_red_producto')
+            .inFilter('orden_trabajo', otsConsulta.toList())
+            .limit(2000);
+        for (final r in rows as List) {
+          final ot = r['orden_trabajo']?.toString().trim() ?? '';
+          final tr = (r['tipo_red_producto']?.toString() ?? '').trim().toUpperCase();
+          if (ot.isNotEmpty && tr.isNotEmpty) tecnoPorOt[ot] = tr;
+        }
+      } catch (_) {}
+    }
+
+    final reiteradosValidos = <Map<String, dynamic>>[];
+    for (final t in universo) {
+      if (!_esReiterado(t['es_reiterado'])) continue;
+      final ot = t['orden_de_trabajo']?.toString().trim() ?? '';
+      final por = t['reiterada_por_ot']?.toString().trim() ?? '';
+      final esAutoReit = ot.isNotEmpty && por.isNotEmpty && ot == por;
+      final tA = tecnoPorOt[ot];
+      final tB = tecnoPorOt[por];
+      final esDistintaTecnologia =
+          por.isNotEmpty && tA != null && tB != null && tA != tB;
+      if (esAutoReit || esDistintaTecnologia) continue;
+      reiteradosValidos.add(t);
+    }
+
+    final total = universo.length;
+    final porcentaje = total > 0
+        ? double.parse((reiteradosValidos.length / total * 100).toStringAsFixed(2))
+        : 0.0;
+
+    double promedioDias = 0;
+    if (reiteradosValidos.isNotEmpty) {
+      double totalDias = 0;
+      int contados = 0;
+      for (final o in reiteradosValidos) {
+        final orig = _parseFecha(o['fecha']?.toString() ?? '');
+        final reit = _parseFecha(o['reiterada_por_fecha']?.toString() ?? '');
+        if (orig != null && reit != null) {
+          totalDias += reit.difference(orig).inDays.toDouble().abs();
+          contados++;
+        }
+      }
+      if (contados > 0) promedioDias = totalDias / contados;
+    }
+
+    print('📊 [CalidadPanel] $periodoTrabajo rut=$rut → universo=$total '
+        '(filas=${filas.length}, gsa=${otGsa.length}) reiteradas=${reiteradosValidos.length} '
+        'pct=$porcentaje');
+
+    return {
+      'periodo': periodoTrabajo,
+      'periodo_remuneracion': periodoRem,
+      'total_completadas': total,
+      'total_reiterados': reiteradosValidos.length,
+      'porcentaje_reiteracion': porcentaje,
+      'promedio_dias': promedioDias,
+      'detalle': reiteradosValidos,
+    };
   }
 
   /// Parsea fecha_trabajo "DD/MM/YY", "DD.MM.YYYY", "YYYY-MM-DD", "DD-MM-YYYY" → [dia, mes, anno]
@@ -483,18 +593,24 @@ class CalidadTrazaService {
       } catch (_) {}
 
       detalle = _filtrarFilasMesMedicion(detalle, periodoTrabajo);
-      final reitListado = detalle.length;
-      final pctListado =
-          totalCompletadas > 0 ? reitListado / totalCompletadas * 100 : 0.0;
+
+      // Cifras principales con la lógica del panel (misma que CN); el
+      // desglose por tecnología se mantiene desde calidad_por_red.
+      final panel = await _calidadPanel(rut, periodoRem);
+      final totalPanel = (panel?['total_completadas'] as int?) ?? totalCompletadas;
+      final reitPanel = (panel?['total_reiterados'] as int?) ?? detalle.length;
+      final pctPanel = (panel?['porcentaje_reiteracion'] as double?) ??
+          (totalCompletadas > 0 ? detalle.length / totalCompletadas * 100 : 0.0);
 
       return {
         'periodo': periodoTrabajo,
         'periodo_remuneracion': periodoRem,
-        'total_completadas': totalCompletadas,
-        'total_reiterados': reitListado,
-        'porcentaje_reiteracion': pctListado,
+        'total_completadas': totalPanel,
+        'total_reiterados': reitPanel,
+        'porcentaje_reiteracion': pctPanel,
+        'promedio_dias': panel?['promedio_dias'] ?? 0.0,
         'por_tecnologia': porTecnologia,
-        'detalle': detalle,
+        'detalle': (panel?['detalle'] as List<Map<String, dynamic>>?) ?? detalle,
       };
     } catch (e) {
       print('❌ [CalidadTraza] Error calidad por tecnologia (calidad_por_red): $e');

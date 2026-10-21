@@ -1,7 +1,7 @@
 name: trazabox
 description: "TrazaBox - Gestión de alertas de fibra óptica para TRAZA"
 publish_to: 'none'
-version: 3.0.4+16
+version: 3.0.17+29
 
 environment:
   sdk: ^3.9.2

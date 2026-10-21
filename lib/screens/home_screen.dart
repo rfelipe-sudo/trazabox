@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:trazabox/constants/app_colors.dart';
 import 'package:trazabox/services/tecnico_ubicacion_service.dart';
 import 'package:trazabox/models/alerta.dart';
@@ -267,22 +268,67 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
+  /// Al tocar el avatar: muestra versión y build instalados (útil para
+  /// saber qué APK tiene cada teléfono durante las pruebas).
+  Future<void> _mostrarVersion() async {
+    String version = '—';
+    String build = '—';
+    try {
+      final info = await PackageInfo.fromPlatform();
+      version = info.version;
+      build = info.buildNumber;
+    } catch (_) {}
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A2C3D),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(children: [
+          Icon(Icons.info_outline, color: Color(0xFF00BCD4), size: 22),
+          SizedBox(width: 8),
+          Text('TrazaBox', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('Versión $version',
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('Build $build',
+              style: const TextStyle(color: Color(0xFF8FA8C8), fontSize: 13)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cerrar',
+                style: TextStyle(color: Color(0xFF00BCD4))),
+          ),
+        ],
+      ),
+    );
+  }
+
   PreferredSizeWidget _buildAppBar(Usuario usuario) {
     return AppBar(
       backgroundColor: const Color(0xFF0D1B2A),
       elevation: 0,
       title: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              gradient: AppColors.creaGradient,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              usuario.esTecnico ? Icons.engineering : Icons.supervisor_account,
-              color: Colors.white,
-              size: 20,
+          GestureDetector(
+            onTap: _mostrarVersion,
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                gradient: AppColors.creaGradient,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                usuario.esTecnico ? Icons.engineering : Icons.supervisor_account,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
           ),
           const SizedBox(width: 12),

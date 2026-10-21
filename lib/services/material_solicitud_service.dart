@@ -15,11 +15,17 @@ class ResultadoTraspasoErp {
   final bool ok;
   final int? traspasoId;
   final String detalle;
+  /// SKU usado para el traspaso (no seriado: único; seriado: ver [skuPorSerie]).
+  final String? sku;
+  /// SKU por serie (seriado: cada serie puede pertenecer a un SKU distinto).
+  final Map<String, String> skuPorSerie;
 
   const ResultadoTraspasoErp({
     required this.ok,
     this.traspasoId,
     this.detalle = '',
+    this.sku,
+    this.skuPorSerie = const {},
   });
 }
 
@@ -126,15 +132,9 @@ class MaterialSolicitudService {
       return const ResultadoNotificacionDestinatarios(cantidad: 0);
     }
 
-    // No notificar a supervisores
-    Set<String> supervisores = {};
-    try {
-      final supRows =
-          await _db.from('supervisores_traza').select('rut').eq('activo', true);
-      supervisores = (supRows as List)
-          .map((r) => LogisticaService.normalizeRutKey(r['rut'] as String? ?? ''))
-          .toSet();
-    } catch (_) {}
+    // Los supervisores participan como un técnico más (tienen bodega
+    // propia en traza materiales): pueden recibir solicitudes y entregar.
+    // Las mismas reglas aplican: GPS vigente, stock real y distancia.
 
     final Map<String, (double, double)> ubicMap = {};
     for (final u in ubicRows) {
@@ -147,9 +147,6 @@ class MaterialSolicitudService {
       if (lat == null || lng == null) continue;
       if (lat.abs() < 0.0001 && lng.abs() < 0.0001) continue;
       if (LogisticaService.sameRut(rut, rutSolicitante)) continue;
-      if (supervisores.contains(LogisticaService.normalizeRutKey(rut))) {
-        continue;
-      }
       ubicMap[rut] = (lat, lng);
     }
 
@@ -217,6 +214,29 @@ class MaterialSolicitudService {
         final n = row?['nombre_completo'] as String? ?? '';
         if (n.isNotEmpty) nombre = n;
       } catch (_) {}
+      if (nombre == c.rut) {
+        // Nómina general (incluye supervisores) y luego supervisores_traza
+        try {
+          final row = await _db
+              .from('tecnicos_traza_zc')
+              .select('nombre_completo')
+              .eq('rut', c.rut)
+              .maybeSingle();
+          final n = row?['nombre_completo'] as String? ?? '';
+          if (n.isNotEmpty) nombre = n;
+        } catch (_) {}
+      }
+      if (nombre == c.rut) {
+        try {
+          final row = await _db
+              .from('supervisores_traza')
+              .select('nombre')
+              .eq('rut', c.rut)
+              .maybeSingle();
+          final n = row?['nombre'] as String? ?? '';
+          if (n.isNotEmpty) nombre = n;
+        } catch (_) {}
+      }
 
       destinatarios.add({
         'solicitud_id': solicitudId,
@@ -306,11 +326,12 @@ class MaterialSolicitudService {
             aplicado = saldoAhora <= saldoPrev - cantidad;
           }
           if (aplicado) {
-            return const ResultadoTraspasoErp(
+            return ResultadoTraspasoErp(
               ok: true,
               traspasoId: -1,
               detalle: 'Traspaso ya aplicado en un intento anterior '
                   '(confirmado por saldo).',
+              sku: skuPrev,
             );
           }
         }
@@ -358,6 +379,15 @@ class MaterialSolicitudService {
         });
       }
 
+      // SKU(s) reales usados — para auditoría y para el correo de respaldo.
+      final skuPorSerie = <String, String>{
+        for (final l in lineas)
+          if (l['serie'] != null)
+            l['serie'] as String: l['codigoMaterial'] as String,
+      };
+      final skuUnico =
+          series.isEmpty ? lineas.first['codigoMaterial'] as String : null;
+
       // ── Candado anti doble-descuento ────────────────────────────
       // El ERP no es idempotente: si el POST entra pero la respuesta se
       // pierde (red/rate-limit), un reintento descuenta DOS veces. Antes
@@ -404,11 +434,13 @@ class MaterialSolicitudService {
           cantidad: cantidad,
         );
         if (aplicado) {
-          return const ResultadoTraspasoErp(
+          return ResultadoTraspasoErp(
             ok: true,
             traspasoId: -1, // sin id: confirmado por verificación de saldo
             detalle: 'Traspaso confirmado por verificación de saldo '
                 '(la respuesta del ERP se perdió).',
+            sku: skuUnico,
+            skuPorSerie: skuPorSerie,
           );
         }
         return ResultadoTraspasoErp(
@@ -426,6 +458,8 @@ class MaterialSolicitudService {
           ok: true,
           traspasoId: (resp['traspasoId'] as num?)?.toInt(),
           detalle: 'Traspaso registrado en bodega',
+          sku: skuUnico,
+          skuPorSerie: skuPorSerie,
         );
       }
       if (elementos.isEmpty && solicitudId != null) {
@@ -555,6 +589,8 @@ class MaterialSolicitudService {
     required SolicitudMaterial solicitud,
     required List<String> series,
     int? traspasoErpId,
+    String? sku,
+    Map<String, String>? skuPorSerie,
   }) async {
     try {
       await _db.functions.invoke('email-traspaso-material', body: {
@@ -567,6 +603,8 @@ class MaterialSolicitudService {
         'equipo': solicitud.tipoMaterial,
         'cantidad': solicitud.cantidad,
         'traspaso_erp_id': traspasoErpId,
+        'sku': sku,
+        'sku_por_serie': skuPorSerie,
       }).timeout(const Duration(seconds: 15));
       debugPrint('✅ [Correo] traspaso enviado');
     } catch (e) {

@@ -159,6 +159,68 @@ class TecnicoService {
     print('🧹 Registro local limpiado');
   }
 
+  /// Rol real del RUT según `supervisores_traza` (prioridad sobre la nómina
+  /// de técnicos: los supervisores también figuran en tecnicos_traza_zc).
+  /// Devuelve 'supervisor', 'ito' o 'tecnico'.
+  static Future<String> rolDesdeSupabase(String rut) async {
+    final base = rut.trim().toUpperCase().replaceAll('.', '');
+    final variantes = <String>{base, base.replaceAll('-', '')};
+    final m = RegExp(r'^0?(\d{7,8})-?([0-9K])$').firstMatch(base);
+    if (m != null) {
+      final num = m.group(1)!;
+      final dv = m.group(2)!;
+      variantes.add('$num-$dv');
+      if (num.length == 7) variantes.add('0$num-$dv');
+    }
+    try {
+      final rows = await _supabase
+          .from('supervisores_traza')
+          .select('cargo, activo')
+          .inFilter('rut', variantes.toList())
+          .eq('activo', true)
+          .limit(1);
+      if ((rows as List).isNotEmpty) {
+        final cargo = (rows.first['cargo']?.toString() ?? 'supervisor')
+            .trim()
+            .toLowerCase();
+        return cargo.contains('ito') ? 'ito' : 'supervisor';
+      }
+    } catch (e) {
+      print('⚠️ [Rol] no se pudo consultar supervisores_traza: $e');
+      rethrow;
+    }
+    return 'tecnico';
+  }
+
+  /// Corrige el rol guardado localmente (prefs + registro del dispositivo)
+  /// cuando difiere del real — p. ej. supervisores registrados como técnico.
+  static Future<void> actualizarRolLocal(String rol) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('user_rol', rol);
+    final rut = prefs.getString('rut_tecnico') ?? prefs.getString('user_rut') ?? '';
+    final nombre = prefs.getString('user_nombre') ?? '';
+    if (rol == 'supervisor' || rol == 'ito') {
+      if (rut.isNotEmpty) await prefs.setString('rut_supervisor', rut);
+      if (nombre.isNotEmpty) await prefs.setString('nombre_supervisor', nombre);
+    } else {
+      await prefs.remove('rut_supervisor');
+      await prefs.remove('nombre_supervisor');
+    }
+    final tecnicoJson = prefs.getString(_storageKey);
+    if (tecnicoJson != null) {
+      final t = TecnicoData.fromJson(jsonDecode(tecnicoJson));
+      await _guardarEnLocal(TecnicoData(
+        deviceId: t.deviceId,
+        telefono: t.telefono,
+        nombre: t.nombre,
+        rol: rol,
+        rutCuerpo: t.rutCuerpo,
+        createdAt: t.createdAt,
+      ));
+    }
+    print('🔁 [Rol] rol local actualizado a "$rol"');
+  }
+
   /// Obtiene el device ID actual
   static Future<String> obtenerDeviceIdActual() async {
     return await getDeviceId();

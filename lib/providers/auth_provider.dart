@@ -61,7 +61,36 @@ class AuthProvider extends ChangeNotifier {
       
       // Verificar si el dispositivo está registrado
       _tecnico = await TecnicoService.verificarRegistro();
-      
+
+      // Auto-corrección del rol: sesiones antiguas quedaron con
+      // 'tecnico' para supervisores (el RPC de registro no devolvía rol).
+      if (_tecnico != null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final rutSesion = _tecnico!.rutCuerpo ??
+              prefs.getString('rut_tecnico') ??
+              prefs.getString('user_rut') ??
+              '';
+          if (rutSesion.isNotEmpty) {
+            final rolReal = await TecnicoService.rolDesdeSupabase(rutSesion);
+            if (rolReal != _tecnico!.rol) {
+              print('🔁 [Auth] rol local "${_tecnico!.rol}" → real "$rolReal"');
+              await TecnicoService.actualizarRolLocal(rolReal);
+              _tecnico = TecnicoData(
+                deviceId: _tecnico!.deviceId,
+                telefono: _tecnico!.telefono,
+                nombre: _tecnico!.nombre,
+                rol: rolReal,
+                rutCuerpo: _tecnico!.rutCuerpo,
+                createdAt: _tecnico!.createdAt,
+              );
+            }
+          }
+        } catch (e) {
+          print('⚠️ [Auth] no se pudo verificar rol real: $e');
+        }
+      }
+
       if (_tecnico != null) {
         _sesionDesbloqueada = false;
         // Dispositivo registrado - crear usuario desde datos del técnico

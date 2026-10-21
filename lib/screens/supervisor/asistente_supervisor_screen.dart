@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:trazabox/screens/solicitud_material_screen.dart';
 
 import '../../models/solicitud_ayuda.dart';
 import '../../services/ayuda_service.dart';
@@ -289,25 +291,22 @@ class _AsistenteSupervisorScreenState
     });
 
     try {
-      final row = await Supabase.instance.client
-          .from('tabla_access_id')
-          .select('access_id, orden_trabajo')
-          .eq('orden_trabajo', ot)
-          .order('fecha_trabajo', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      // Access ID resuelto contra Kepler/TOA (iniciadas y sábana del día)
+      // con respaldo en el histórico de Supabase — igual que el técnico.
+      final accessRaw =
+          await NyquistService().buscarAccessIdPorOtSupervisor(ot) ?? '';
 
-      if (row == null || (row['access_id']?.toString() ?? '').isEmpty) {
+      if (accessRaw.isEmpty) {
         if (!mounted) return;
         setState(() {
           _ctoLoading = false;
-          _ctoError   = 'OT $ot no encontrada en tabla_access_id.';
+          _ctoError   = 'OT $ot sin Access ID: no está iniciada en TOA, '
+              'no aparece en la sábana de hoy ni en el histórico.';
         });
         return;
       }
 
       const vno        = '02';
-      final accessRaw  = row['access_id'].toString().trim();
       final accessFull = accessRaw.startsWith('$vno-') ? accessRaw : '$vno-$accessRaw';
 
       final estado = await NyquistService().consultarEstado(accessFull);
@@ -348,7 +347,69 @@ class _AsistenteSupervisorScreenState
         onPressed: () => Navigator.pop(context),
       );
     }
-    return null;
+    // Raíz del supervisor: avatar — al tocarlo muestra versión y build
+    return Padding(
+      padding: const EdgeInsets.only(left: 12),
+      child: GestureDetector(
+        onTap: _mostrarVersion,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF00BCD4), Color(0xFF1565C0)],
+            ),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: const Icon(Icons.supervisor_account,
+              color: Colors.white, size: 22),
+        ),
+      ),
+    );
+  }
+
+  /// Al tocar el avatar: versión y build instalados (para saber qué APK
+  /// tiene cada teléfono durante las pruebas).
+  Future<void> _mostrarVersion() async {
+    String version = '—';
+    String build = '—';
+    try {
+      final info = await PackageInfo.fromPlatform();
+      version = info.version;
+      build = info.buildNumber;
+    } catch (_) {}
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _colorCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(children: [
+          Icon(Icons.info_outline, color: _colorCyan, size: 22),
+          SizedBox(width: 8),
+          Text('TrazaBox', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('Versión $version',
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('Build $build',
+              style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          const SizedBox(height: 4),
+          Text(_nombre.isNotEmpty ? _nombre : 'Supervisor',
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cerrar', style: TextStyle(color: _colorCyan)),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildTitle() {
@@ -485,6 +546,19 @@ class _AsistenteSupervisorScreenState
               MaterialPageRoute(
                 builder: (_) =>
                     const SolicitudesMaterialSupervisorScreen(),
+              ),
+            ),
+          ),
+          // El supervisor también opera como un técnico más en el módulo de
+          // material: puede pedir material y entregar desde su propia bodega.
+          _buildCard(
+            icono: Icons.swap_horiz_rounded,
+            titulo: 'Solicitar /\nEntregar Material',
+            colores: [const Color(0xFF16A34A), const Color(0xFF0B7A55)],
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const SolicitudMaterialScreen(),
               ),
             ),
           ),

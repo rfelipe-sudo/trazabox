@@ -120,6 +120,145 @@ class ProduccionService {
     return (rgu, ph);
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // REGLAS DEL PANEL DE REMUNERACIONES (bonos_traza.html)
+  // Portadas 1:1 para que "Tu Mes" muestre los mismos números que
+  // el panel. Cualquier cambio de fórmula en el panel hay que
+  // replicarlo aquí.
+  // ═══════════════════════════════════════════════════════════
+
+  /// Actividades administrativas que nunca generan RGU (panel: ACTIVIDADES_NO_OPERACIONALES).
+  static const Set<String> actividadesNoOperacionales = {
+    'Colación', 'No inicia Colación', 'No termina colación',
+    'No inicia actividad', 'No inicia primera ejecución', 'No inicia ruta',
+    'Siniestro Personal', 'Siniestro Vehicular',
+    'Retiro Anticipado', 'Ausencia',
+    'Gestion Con SOPTECC', 'Proceso Direccion Incorrecta',
+  };
+
+  static String _areaUpper(Map<String, dynamic> o) =>
+      (o['area_derivacion']?.toString() ?? '').trim().toUpperCase();
+
+  static bool _esNoRealizadaPanel(Map<String, dynamic> o) =>
+      (o['estado']?.toString() ?? '').trim() == 'No Realizada';
+
+  static bool _esReparacion(Map<String, dynamic> o) {
+    final t = (o['tipo_orden']?.toString().trim().isNotEmpty == true
+            ? o['tipo_orden']
+            : o['tipo_actividad'])
+        ?.toString() ??
+        '';
+    return RegExp(r'reparac', caseSensitive: false).hasMatch(t);
+  }
+
+  /// Qué cuenta como producción según el panel:
+  /// Completado, o No Realizada derivada a GSA, o No Realizada derivada a
+  /// REDES / REDES NEUTRA solo si es reparación (las instalaciones
+  /// derivadas a REDES se excluyen).
+  static bool cuentaComoProduccionPanel(dynamic orden) {
+    if (orden is! Map) return false;
+    final o = Map<String, dynamic>.from(orden as Map);
+    final e = (o['estado']?.toString() ?? '').trim();
+    if (e == 'Completado') return true;
+    if (!_esNoRealizadaPanel(o)) return false;
+    final a = _areaUpper(o);
+    if (a == 'GSA') return true;
+    if (a == 'REDES' || a == 'REDES NEUTRA') return _esReparacion(o);
+    return false;
+  }
+
+  /// RGU inferido desde el tipo de orden cuando Kepler trae rgu_total = 0
+  /// (panel: calcularRguDesdeOrdenHFC).
+  static double calcularRguDesdeOrden(
+      String? tipoOrden, String? tipoActividad, dynamic dbox, dynamic extensores) {
+    final t = ((tipoOrden?.trim().isNotEmpty == true ? tipoOrden : tipoActividad) ?? '')
+        .toLowerCase();
+    final d = int.tryParse(dbox?.toString() ?? '') ?? 0;
+    final e = int.tryParse(extensores?.toString() ?? '') ?? 0;
+    double extra() => (d - 1).clamp(0, 999) * 0.5 + e * 0.75;
+    if (t.contains('3 play')) return 3 + extra();
+    if (t.contains('2 play')) return 2 + extra();
+    if (t.contains('1 play')) return 1 + extra();
+    if (t.contains('traslado')) return 1 + extra();
+    if (t.contains('migrac')) return 1 + extra();
+    if (t.contains('modific')) {
+      if (d >= 1) return 1.0 + extra();
+      final ext = e * 0.75;
+      return ext > 0 ? ext : 0.75;
+    }
+    if (t.contains('reparac') || t.contains('averia') || t.contains('soporte')) return 1;
+    if (t.contains('upgrade') || t.contains('downgrade')) return 1;
+    if (t.contains('alta')) return 1 + extra();
+    return 1;
+  }
+
+  /// RGU efectivo de una orden con las reglas del panel (CN):
+  /// 1. No Realizada REDES/REDES NEUTRA + reparación → 1 fijo
+  /// 2. Subtipo "Mod Peticion" sin dbox ni extensores → rgu_base (o 0.75)
+  /// 3. No Realizada GSA con rgu_total = 0 → inferido por tipo de orden
+  /// 4. Resto → rgu_total de BD
+  static double rguEfectivoPanel(Map<String, dynamic> o) {
+    final a = _areaUpper(o);
+    final esRedes = _esNoRealizadaPanel(o) && (a == 'REDES' || a == 'REDES NEUTRA');
+    if (esRedes && _esReparacion(o)) return 1;
+
+    final dbox = int.tryParse(o['dbox']?.toString() ?? '') ?? 0;
+    final ext = int.tryParse(o['extensores']?.toString() ?? '') ?? 0;
+    final esModPeticionSinEquipos =
+        (o['subtipo']?.toString() ?? '').trim() == 'Mod Peticion' && dbox == 0 && ext == 0;
+    if (esModPeticionSinEquipos) {
+      final base = (o['rgu_base'] as num?)?.toDouble() ?? 0;
+      return base > 0 ? base : 0.75;
+    }
+
+    final rguTotal = (o['rgu_total'] as num?)?.toDouble() ?? 0;
+    final esGsaSinRgu = _esNoRealizadaPanel(o) && a == 'GSA' && rguTotal == 0;
+    if (esGsaSinRgu) {
+      return calcularRguDesdeOrden(
+          o['tipo_orden']?.toString(), o['tipo_actividad']?.toString(), o['dbox'], o['extensores']);
+    }
+    return rguTotal;
+  }
+
+  /// Fecha de trabajo normalizada a YYYY-MM-DD (acepta ISO, DD/MM/YY, DD.MM.YY).
+  static String? fechaIso(String? fechaStr) {
+    if (fechaStr == null) return null;
+    final partes = _partirFechaStatic(fechaStr);
+    if (partes == null) return null;
+    final d = int.tryParse(partes[0]) ?? 0;
+    final m = int.tryParse(partes[1]) ?? 0;
+    var y = int.tryParse(partes[2]) ?? 0;
+    if (y < 100) y += 2000;
+    if (d < 1 || m < 1 || m > 12 || y < 2000) return null;
+    return '$y-${m.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
+  }
+
+  static List<String>? _partirFechaStatic(String fechaStr) {
+    final s = fechaStr.trim();
+    final iso = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})').firstMatch(s);
+    if (iso != null) return [iso.group(3)!, iso.group(2)!, iso.group(1)!];
+    final dmy = RegExp(r'^(\d{1,2})-(\d{1,2})-(\d{4})$').firstMatch(s);
+    if (dmy != null) return [dmy.group(1)!, dmy.group(2)!, dmy.group(3)!];
+    final partes = s.replaceAll('.', '/').split('/');
+    return partes.length == 3 ? partes : null;
+  }
+
+  /// Variantes del RUT tal como aparece en rol_turno / ausencias / bitácoras
+  /// (con y sin cero a la izquierda: "9491423-K" ↔ "09491423-K").
+  static List<String> rutVariantesRol(String rut) {
+    final base = rut.trim().toUpperCase().replaceAll('.', '');
+    final out = <String>{base};
+    final m = RegExp(r'^0?(\d{7,8})-?([0-9K])$').firstMatch(base);
+    if (m != null) {
+      final num = m.group(1)!;
+      final dv = m.group(2)!;
+      out.add('$num-$dv');
+      if (num.length == 7) out.add('0$num-$dv');
+      if (num.length == 8 && num.startsWith('0')) out.add('${num.substring(1)}-$dv');
+    }
+    return out.where((s) => s.isNotEmpty).toList();
+  }
+
   /// Agrupa por `orden_trabajo` + `fecha_trabajo`, elige la mejor fila por [prioridadEstado] y fusiona
   /// `area_derivacion` REDES y campos de producto desde duplicados (p. ej. Completado sin área + No Realizada/REDES).
   static List<Map<String, dynamic>> deduplicarYFusionarOrdenesProduccion(
@@ -1156,11 +1295,12 @@ class ProduccionService {
             .maybeSingle();
         
         if (tecnicoResponse != null) {
-          tipoContrato = tecnicoResponse['tipo_contrato']?.toString() ?? 'CN';
-          // Derivar turno desde el tipo de contrato
-          if (tipoContrato.toUpperCase() == 'CN') {
+          tipoContrato = tecnicoResponse['tipo_contrato']?.toString() ?? 'nuevo';
+          // La BD guarda 'nuevo'/'antiguo' (el panel los mapea a CN/CA).
+          final tc = tipoContrato.trim().toUpperCase();
+          if (tc == 'CN' || tc == 'NUEVO') {
             tipoTurno = '6x1'; // Contrato Nuevo → 6 días trabajo, 1 descanso
-          } else if (tipoContrato.toUpperCase() == 'CA') {
+          } else if (tc == 'CA' || tc.contains('ANTIG')) {
             tipoTurno = '5x1'; // Contrato Antiguo → 5 días trabajo, 2 descansos
           } else {
             tipoTurno = tecnicoResponse['tipo_turno']?.toString() ?? '5x2';
@@ -1195,6 +1335,15 @@ class ProduccionService {
       // ═══════════════════════════════════════════════════════════════════
       
       // 1️⃣ Buscar por RUT (múltiples formatos: 12345678-9, 12.345.678-9)
+      // Rango del mes en el servidor: Supabase corta cada consulta en 1.000
+      // filas (tope del servidor, aunque se pida más) y técnicos con mucho
+      // historial perdían las filas más recientes. fecha_trabajo es DATE.
+      final mesIni =
+          '$annoConsulta-${mesConsulta.toString().padLeft(2, '0')}-01';
+      final mesSig = DateTime(annoConsulta, mesConsulta + 1, 1);
+      final mesFin =
+          '${mesSig.year}-${mesSig.month.toString().padLeft(2, '0')}-01';
+
       final variantesRut = rutVariantes(rutTecnico);
       List<dynamic> ordenesPorRut = [];
       if (variantesRut.isNotEmpty) {
@@ -1202,7 +1351,9 @@ class ProduccionService {
             .from('produccion')
             .select()
             .inFilter('rut_tecnico', variantesRut)
-            .limit(10000); // Evitar truncación (default 1000)
+            .gte('fecha_trabajo', mesIni)
+            .lt('fecha_trabajo', mesFin)
+            .limit(5000);
 
         ordenesPorRut = responseRut as List? ?? [];
       }
@@ -1234,8 +1385,10 @@ class ProduccionService {
               .from('produccion')
               .select()
               .ilike('tecnico', nombreTecnico)
-              .limit(10000); // Evitar truncación (default 1000)
-          
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000);
+
           ordenesPorNombre = responseNombre as List? ?? [];
           print('🔍 [Produccion] Órdenes por NOMBRE (ilike "$nombreTecnico"): ${ordenesPorNombre.length}');
         } catch (e) {
@@ -1244,7 +1397,9 @@ class ProduccionService {
               .from('produccion')
               .select()
               .eq('tecnico', nombreTecnico)
-              .limit(10000);
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000);
           ordenesPorNombre = resp as List? ?? [];
         }
       }
@@ -1311,99 +1466,236 @@ class ProduccionService {
         };
       }
 
-      // Agrupar órdenes por fecha (clave normalizada DD-MM-YYYY para no perder días por formato)
-      Map<String, List<dynamic>> ordenesPorFecha = {};
-      for (var orden in ordenesMes) {
-        final fechaStr = orden['fecha_trabajo']?.toString() ?? '';
-        final clave = _fechaClave(fechaStr);
-        if (clave != null) {
-          ordenesPorFecha.putIfAbsent(clave, () => []);
-          ordenesPorFecha[clave]!.add(orden);
+      // ═══════════════════════════════════════════════════════════
+      // MOTOR DEL PANEL DE REMUNERACIONES (bonos_traza.html)
+      // ═══════════════════════════════════════════════════════════
+      // 1. Universo de producción: Completado / No Realizada GSA /
+      //    No Realizada REDES solo reparación. Completado gana al
+      //    deduplicar por orden_trabajo (el panel dedup por OT, no por
+      //    OT+fecha). Se excluyen actividades administrativas.
+      final candidatas = ordenesMes
+          .whereType<Map>()
+          .map((o) => Map<String, dynamic>.from(o))
+          .where(cuentaComoProduccionPanel)
+          .toList()
+        ..sort((a, b) => prioridadEstado(a).compareTo(prioridadEstado(b)));
+      final otVistas = <String>{};
+      final produccionPanel = <Map<String, dynamic>>[];
+      for (final o in candidatas) {
+        final ot = (o['orden_trabajo']?.toString() ?? '').trim();
+        if (ot.isNotEmpty) {
+          if (otVistas.contains(ot)) continue;
+          otVistas.add(ot);
+        }
+        if (actividadesNoOperacionales.contains(o['tipo_actividad']?.toString())) {
+          continue;
+        }
+        produccionPanel.add(o);
+      }
+
+      // Conteos informativos (efectividad / quiebre) sobre todas las filas del mes
+      int canceladas = 0;
+      int noRealizadas = 0;
+      for (final orden in ordenesMes) {
+        final estado = orden['estado']?.toString() ?? '';
+        if (cuentaComoProduccionPanel(orden)) continue;
+        if (estado == 'Cancelado') {
+          canceladas++;
+        } else if (esEstadoNoRealizada(orden)) {
+          noRealizadas++;
         }
       }
 
-      // Analizar cada día
+      // 2. RGU efectivo por orden + días trabajados (fechas únicas)
       int completadas = 0;
       int ordenesDerivacionRedes = 0;
-      int canceladas = 0;
-      int noRealizadas = 0;
       double totalRGU = 0;
-      // Desglose por tecnología (contrato antiguo)
+      final Set<String> diasConProduccion = {};
+      for (final o in produccionPanel) {
+        completadas++;
+        if (esDerivacionRedes(o)) ordenesDerivacionRedes++;
+        totalRGU += rguEfectivoPanel(o);
+        final f = fechaIso(o['fecha_trabajo']?.toString());
+        if (f != null) diasConProduccion.add(f);
+      }
+      // Quebradas: suman día trabajado sin RGU (panel)
+      for (final orden in ordenesMes) {
+        if ((orden['estado']?.toString() ?? '').trim() == 'Quebrado') {
+          final f = fechaIso(orden['fecha_trabajo']?.toString());
+          if (f != null) diasConProduccion.add(f);
+        }
+      }
+
+      // 3. Ajustes administrativos del panel (todas las consultas son
+      //    tolerantes: si una tabla falla, se sigue sin ese ajuste)
+      final rutsRol = rutVariantesRol(rutTecnico);
+      final mesPago = DateTime(annoConsulta, mesConsulta + 1, 1);
+      final mesPagoYm =
+          '${mesPago.year}-${mesPago.month.toString().padLeft(2, '0')}';
+
+      // 3a. RGU adicionales manuales (clave: mes de PAGO, como el panel)
+      double rguAdicionalManual = 0;
+      try {
+        final rows = await _supabase
+            .from('rgu_adicionales_traza')
+            .select('rgu_adicional')
+            .inFilter('rut_tecnico', rutsRol)
+            .eq('mes', mesPagoYm);
+        for (final r in rows as List) {
+          rguAdicionalManual += (r['rgu_adicional'] as num?)?.toDouble() ?? 0;
+        }
+      } catch (e) {
+        debugPrint('⚠️ [Panel] rgu_adicionales_traza: $e');
+      }
+      totalRGU += rguAdicionalManual;
+
+      // 3b. Bitácoras (Px=0, cursos, siniestros…): delta de RGU y día operativo
+      try {
+        final rows = await _supabase
+            .from('bitacoras_traza')
+            .select('fecha, tipo_compensacion, rgu_original_dia, rgu_asignado')
+            .inFilter('rut_tecnico', rutsRol)
+            .eq('mes', mesConsulta)
+            .eq('anio', annoConsulta);
+        for (final b in rows as List) {
+          final delta = ((b['rgu_asignado'] as num?)?.toDouble() ?? 0) -
+              ((b['rgu_original_dia'] as num?)?.toDouble() ?? 0);
+          totalRGU += delta;
+          if (b['tipo_compensacion']?.toString() == 'DIA_COMPLETO') {
+            final f = fechaIso(b['fecha']?.toString());
+            if (f != null) diasConProduccion.add(f);
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ [Panel] bitacoras_traza: $e');
+      }
+
+      // 3c. Rol de turno real: días OPERATIVO y VACACIONES del mes.
+      //     Mes en curso: solo hasta hoy (el rol se carga día a día).
+      int? diasOperativoRol;
+      int diasVacRol = 0;
+      try {
+        final hoy = DateTime.now();
+        final esMesActual = mesConsulta == hoy.month && annoConsulta == hoy.year;
+        var q = _supabase
+            .from('rol_turno')
+            .select('fecha, estado')
+            .inFilter('rut', rutsRol)
+            .eq('mes', mesConsulta)
+            .eq('anio', annoConsulta)
+            .inFilter('estado', ['OPERATIVO', 'VACACIONES']);
+        if (esMesActual) {
+          q = q.lte('fecha',
+              '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}');
+        }
+        final rows = await q;
+        int op = 0;
+        for (final r in rows as List) {
+          if (r['estado'] == 'OPERATIVO') op++;
+          if (r['estado'] == 'VACACIONES') diasVacRol++;
+        }
+        if ((rows).isNotEmpty) diasOperativoRol = op;
+      } catch (e) {
+        debugPrint('⚠️ [Panel] rol_turno: $e');
+      }
+
+      // 3d. Ausencias manuales: vacaciones (días + RGU compensado) y desvinculado
+      int diasVacManual = 0;
+      double rguCompVac = 0;
+      bool esDesvinculado = false;
+      try {
+        final rows = await _supabase
+            .from('ausencias_tecnicos')
+            .select('tipo, dias, dias_vacaciones, rgu_compensados')
+            .inFilter('rut', rutsRol)
+            .eq('mes', mesConsulta)
+            .eq('anio', annoConsulta);
+        for (final a in rows as List) {
+          switch (a['tipo']?.toString()) {
+            case 'VACACIONES':
+              rguCompVac = (a['rgu_compensados'] as num?)?.toDouble() ?? 0;
+              diasVacManual = (a['dias_vacaciones'] as num?)?.toInt() ?? 0;
+              break;
+            case 'DESVINCULADO':
+              esDesvinculado = true;
+              break;
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ [Panel] ausencias_tecnicos: $e');
+      }
+
+      // 4. Denominador y promedio (panel):
+      //    NORMAL: MAX(días con carga, días OPERATIVO del rol) + vacaciones
+      //    DESVINCULADO: solo días con carga
+      final diasTrab = diasConProduccion.length;
+      final diasBaseRol = diasOperativoRol ?? diasTrab;
+      final diasBase = esDesvinculado ? diasTrab : max(diasTrab, diasBaseRol);
+      final diasDenominador =
+          esDesvinculado ? diasTrab : diasBase + diasVacRol + diasVacManual;
+      totalRGU += rguCompVac;
+      final promedioPanel = diasDenominador > 0
+          ? double.parse((totalRGU / diasDenominador).toStringAsFixed(2))
+          : 0.0;
+
+      // 5. Desglose informativo por tecnología (cards CA) sobre el mismo universo
+      final contratoAntiguo = esContratoAntiguoTipo(tipoContrato);
       double rguRedNeutra = 0;
       double ptosHfc = 0;
       double rguFtth = 0;
-      Set<String> diasConProduccion = {};
-      List<Map<String, dynamic>> diasPX0List = [];
-      // Cuando existe HFC: días con RGU (NFTT/FTTH) vs días con HFC
       int diasRgu = 0;
       int diasHfc = 0;
-
-      final contratoAntiguo = esContratoAntiguoTipo(tipoContrato);
-
-      for (var entry in ordenesPorFecha.entries) {
-        final fecha = entry.key;
-        final ordenesDelDia = entry.value;
-
-        int completadasDia = 0;
-        double rguDia = 0;
-        double ptsHfcDia = 0;
+      final List<Map<String, dynamic>> diasPX0List = [];
+      final Map<String, List<Map<String, dynamic>>> porDia = {};
+      for (final o in produccionPanel) {
+        final f = fechaIso(o['fecha_trabajo']?.toString()) ?? '';
+        porDia.putIfAbsent(f, () => []).add(o);
+      }
+      for (final entry in porDia.entries) {
         bool tieneRguDia = false;
         bool tieneHfcDia = false;
-
-        for (var orden in ordenesDelDia) {
-          final estado = orden['estado']?.toString() ?? '';
-
-          if (cuentaComoProduccion(orden)) {
-            completadas++;
-            completadasDia++;
-            final oMap = orden as Map<String, dynamic>;
-            if (esDerivacionRedes(oMap)) ordenesDerivacionRedes++;
-            final eff = valoresEfectivosProduccionOrden(oMap, contratoAntiguo);
-            final rgu = eff.$1;
-            final ptsHfcOrd = eff.$2;
-            // Usar tecnologia (HFC, FTTH, RED_NEUTRA); tipo_red_producto es crudo (CHFC, CFTT, NFTT)
-            final tecno = (orden['tecnologia']?.toString().trim().isNotEmpty == true
-                    ? orden['tecnologia']?.toString()
-                    : null) ??
-                'RED_NEUTRA';
-
-            // Total RGU = suma efectiva (derivación REDES con reglas Kepler)
-            totalRGU += rgu;
-            rguDia += rgu;
-            tieneRguDia = tieneRguDia || rgu > 0;
-
-            if (tecno.toUpperCase() == 'HFC') {
-              if (ptsHfcOrd > 0) {
-                ptosHfc += ptsHfcOrd;
-                ptsHfcDia += ptsHfcOrd;
-                tieneHfcDia = true;
-              } else if (rgu > 0) {
-                rguFtth += rgu;
-              }
-            } else if (tecno.toUpperCase() == 'FTTH') {
+        for (final o in entry.value) {
+          final eff = valoresEfectivosProduccionOrden(o, contratoAntiguo);
+          final rgu = eff.$1;
+          final ptsHfcOrd = eff.$2;
+          final tecno = (o['tecnologia']?.toString().trim().isNotEmpty == true
+                  ? o['tecnologia']?.toString()
+                  : null) ??
+              'RED_NEUTRA';
+          tieneRguDia = tieneRguDia || rgu > 0;
+          if (tecno.toUpperCase() == 'HFC') {
+            if (ptsHfcOrd > 0) {
+              ptosHfc += ptsHfcOrd;
+              tieneHfcDia = true;
+            } else if (rgu > 0) {
               rguFtth += rgu;
-            } else {
-              rguRedNeutra += rgu;
             }
-          } else if (estado == 'Cancelado') {
-            canceladas++;
-          } else if (esEstadoNoRealizada(orden)) {
-            noRealizadas++;
+          } else if (tecno.toUpperCase() == 'FTTH') {
+            rguFtth += rgu;
+          } else {
+            rguRedNeutra += rgu;
           }
         }
-
         if (tieneRguDia) diasRgu++;
         if (tieneHfcDia) diasHfc++;
-
-        if (completadasDia > 0) {
-          diasConProduccion.add(fecha);
-        } else {
-          diasPX0List.add({
-            'fecha': fecha,
-            'ordenes': ordenesDelDia.length,
-          });
+      }
+      // Días con órdenes del mes pero sin producción válida (Px=0)
+      final diasConOrdenes = <String, int>{};
+      for (final orden in ordenesMes) {
+        final f = fechaIso(orden['fecha_trabajo']?.toString());
+        if (f != null) diasConOrdenes[f] = (diasConOrdenes[f] ?? 0) + 1;
+      }
+      for (final e in diasConOrdenes.entries) {
+        if (!diasConProduccion.contains(e.key)) {
+          diasPX0List.add({'fecha': e.key, 'ordenes': e.value});
         }
       }
+
+      debugPrint('📊 [Panel] $mesConsulta/$annoConsulta rut=$rutTecnico → '
+          'ordenes=$completadas rgu=${totalRGU.toStringAsFixed(2)} '
+          '(adic=$rguAdicionalManual compVac=$rguCompVac) '
+          'diasTrab=$diasTrab rolOp=$diasOperativoRol vac=${diasVacRol + diasVacManual} '
+          'denominador=$diasDenominador promedio=$promedioPanel');
 
       final totalAsignadas = completadas + canceladas + noRealizadas;
       final diasPX0 = diasPX0List.length;
@@ -1465,10 +1757,9 @@ class ProduccionService {
       // Promedio RGU/día y PTS/día (cuando hay HFC, promedios por tipo de día)
       final tieneHfc = ptosHfc > 0;
       final diasConProd = diasConProduccion.length;
-      final divisor = diasTrabajados > 0 ? diasTrabajados : (diasConProd > 0 ? diasConProd : 1);
-      final promedioRGU = tieneHfc
-          ? (diasRgu > 0 ? totalRGU / diasRgu : 0.0)
-          : totalRGU / divisor;
+      // Promedio RGU/día = fórmula del panel (misma para CN y CA: desde
+      // oct-2026 el panel homologa CA al criterio CN).
+      final promedioRGU = promedioPanel;
       final promedioPts = tieneHfc && diasHfc > 0 ? ptosHfc / diasHfc : 0.0;
       
       print('📊 [Produccion] CÁLCULO PROMEDIO:');

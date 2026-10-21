@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:trazabox/utils/rut_helper.dart';
 import 'package:trazabox/services/produccion_service.dart';
+import 'package:trazabox/services/tecnico_service.dart';
 
 /// Resultado de [verificarDispositivoSupabase].
 class DeviceVerificationResult {
@@ -231,15 +232,16 @@ Future<Map<String, dynamic>?> _validarRutFallbackTablas(
     final lista = variantes.where((s) => s.isNotEmpty).toList();
     if (lista.isEmpty) return null;
 
+    // Nómina TRAZA: tecnicos_traza_zc (en CREA era nomina_tecnicos)
     final nom = await client
-        .from('nomina_tecnicos')
-        .select('rut, nombres, paterno, materno')
+        .from('tecnicos_traza_zc')
+        .select('rut, nombre_completo')
         .inFilter('rut', lista)
         .limit(1)
         .maybeSingle();
 
     if (nom != null) {
-      final nombre = '${nom['nombres'] ?? ''} ${nom['paterno'] ?? ''} ${nom['materno'] ?? ''}'
+      final nombre = (nom['nombre_completo']?.toString() ?? '')
           .trim()
           .replaceAll(RegExp(r'\s+'), ' ');
       if (nombre.isNotEmpty) {
@@ -300,17 +302,41 @@ Future<Map<String, dynamic>?> validarRutTecnicoSupabase(
   }
 
   Map<String, dynamic>? rpcPrimera = await llamarRpc(limpio);
-  if (rpcPrimera != null && rpcPrimera['existe'] == true) return rpcPrimera;
+  if (rpcPrimera != null && rpcPrimera['existe'] == true) {
+    return _conRol(rpcPrimera, limpio);
+  }
 
   final sinGuion = limpio.replaceAll('-', '');
   Map<String, dynamic>? rpcSegunda;
   if (sinGuion != limpio) {
     rpcSegunda = await llamarRpc(sinGuion);
-    if (rpcSegunda != null && rpcSegunda['existe'] == true) return rpcSegunda;
+    if (rpcSegunda != null && rpcSegunda['existe'] == true) {
+      return _conRol(rpcSegunda, limpio);
+    }
   }
 
   final fb = await _validarRutFallbackTablas(limpio);
-  if (fb != null) return fb;
+  if (fb != null) return _conRol(fb, limpio);
 
   return rpcSegunda ?? rpcPrimera;
+}
+
+/// El RPC `validar_rut_tecnico` no devuelve `rol`: sin esto todo RUT
+/// quedaba registrado como técnico (supervisores incluidos). Se resuelve
+/// contra supervisores_traza, que tiene prioridad sobre la nómina.
+Future<Map<String, dynamic>> _conRol(Map<String, dynamic> data, String rut) async {
+  if ((data['rol']?.toString() ?? '').trim().isNotEmpty) return data;
+  String rol = 'tecnico';
+  try {
+    rol = await TecnicoService.rolDesdeSupabase(rut);
+  } catch (_) {
+    // Sin conexión a supervisores_traza: inferir desde tipo_personal
+    final tp = (data['tipo_personal']?.toString() ?? '').toLowerCase();
+    if (tp.contains('ito')) {
+      rol = 'ito';
+    } else if (tp.contains('supervisor')) {
+      rol = 'supervisor';
+    }
+  }
+  return {...data, 'rol': rol};
 }

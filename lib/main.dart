@@ -17,6 +17,7 @@ import 'package:trazabox/providers/auth_provider.dart';
 import 'package:trazabox/providers/alertas_provider.dart';
 import 'package:trazabox/providers/alerta_provider.dart';
 import 'package:trazabox/services/fcm_service.dart';
+import 'package:trazabox/services/tecnico_ubicacion_service.dart';
 import 'package:trazabox/services/local_notification_service.dart';
 import 'package:trazabox/services/alerta_contexto_service.dart';
 import 'package:trazabox/services/churn_service.dart';
@@ -533,6 +534,11 @@ class _AppHomeByRolState extends State<_AppHomeByRol> {
           WidgetsBinding.instance.addPostFrameCallback((_) async {
             unawaited(FcmService.instance.syncFcmTokenDispositivo());
             unawaited(FcmService.instance.initSupervisorAyudaMonitor());
+            // El supervisor participa en el módulo de material como un
+            // técnico más: publica ubicación (para ser candidato) y escucha
+            // las solicitudes en las que queda como destinatario.
+            unawaited(TecnicoUbicacionService.start());
+            unawaited(FcmService.instance.initSolicitudMonitor());
             unawaited(ComunicadoService.instance.iniciarMonitor());
             unawaited(ComunicadoService.instance.mostrarInmediato(reproducirSonido: true));
             final rut = await AyudaService.resolverRutSupervisorSesion();

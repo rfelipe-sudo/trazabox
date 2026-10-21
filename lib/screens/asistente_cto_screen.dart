@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:trazabox/services/produccion_service.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -238,17 +239,18 @@ class _AsistenteCtoScreenState extends State<AsistenteCtoScreen> {
     try {
       final hoy = DateTime.now();
       final hoyStr = '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
+      // Tabla TRAZA: `produccion` no tiene access_id → se indexa por OT.
       final rows = await Supabase.instance.client
-          .from('produccion_crea')
-          .select('access_id, estado')
-          .eq('rut_tecnico', rut)
-          .gte('hora_inicio', hoyStr)
+          .from('produccion')
+          .select('orden_trabajo, estado')
+          .inFilter('rut_tecnico', ProduccionService.rutVariantes(rut))
+          .eq('fecha_trabajo', hoyStr)
           .order('hora_inicio', ascending: false);
       final map = <String, String>{};
       for (final r in (rows as List)) {
-        final aid = r['access_id']?.toString().trim() ?? '';
+        final ot = r['orden_trabajo']?.toString().trim() ?? '';
         final est = r['estado']?.toString() ?? '';
-        if (aid.isNotEmpty) map[aid] = est;
+        if (ot.isNotEmpty && !map.containsKey(ot)) map[ot] = est;
       }
       return map;
     } catch (_) {
@@ -1947,15 +1949,22 @@ class _AsistenteCtoScreenState extends State<AsistenteCtoScreen> {
       final mananaStr = '${manana.year}-${manana.month.toString().padLeft(2, '0')}-${manana.day.toString().padLeft(2, '0')}';
       const vno = '02';
 
-      final rutQuery = formatRutForKepler(rut);
+      // Tabla TRAZA: `produccion` (en CREA era produccion_creaciones).
+      final rutsQuery = {
+        formatRutForKepler(rut),
+        ...ProduccionService.rutVariantes(rut),
+      }.where((s) => s.isNotEmpty).toList();
 
+      // En TRAZA la fecha de la orden es `fecha_trabajo` (DATE);
+      // `fecha_proceso` es la carga y no sirve para acotar el día.
       final rawRows = await Supabase.instance.client
-          .from('produccion_creaciones')
-          .select('orden_trabajo, estado, tipo_orden, hora_inicio, fecha_proceso')
-          .eq('rut_tecnico', rutQuery)
-          .gte('fecha_proceso', ayerStr)
-          .lt('fecha_proceso', mananaStr)
-          .order('fecha_proceso', ascending: false);
+          .from('produccion')
+          .select('orden_trabajo, estado, tipo_orden, hora_inicio, fecha_proceso, fecha_trabajo')
+          .inFilter('rut_tecnico', rutsQuery)
+          .gte('fecha_trabajo', ayerStr)
+          .lt('fecha_trabajo', mananaStr)
+          .order('fecha_trabajo', ascending: false)
+          .order('hora_inicio', ascending: false);
 
       if (!mounted) return;
 
@@ -1979,15 +1988,17 @@ class _AsistenteCtoScreenState extends State<AsistenteCtoScreen> {
       final Map<String, String> accessPorOT = {};
       if (todasOTs.isNotEmpty) {
         try {
+          // Tabla TRAZA: `access_id` (orden_de_trabajo / access_id).
+          // (`tabla_access_id` era el nombre en el proyecto CREA.)
           final accRows = await Supabase.instance.client
-              .from('tabla_access_id')
-              .select('orden_trabajo, access_id')
-              .inFilter('orden_trabajo', todasOTs)
+              .from('access_id')
+              .select('orden_de_trabajo, access_id')
+              .inFilter('orden_de_trabajo', todasOTs)
               .not('access_id', 'is', null)
               .neq('access_id', '')
               .neq('access_id', 'Sin Datos');
           for (final a in (accRows as List)) {
-            final ot  = a['orden_trabajo']?.toString() ?? '';
+            final ot  = a['orden_de_trabajo']?.toString() ?? '';
             final aid = a['access_id']?.toString().trim() ?? '';
             if (ot.isNotEmpty && aid.isNotEmpty) accessPorOT[ot] = aid;
           }
@@ -2007,9 +2018,33 @@ class _AsistenteCtoScreenState extends State<AsistenteCtoScreen> {
         return !_esCompletada(r) && !_esIniciada(r) && est != 'cancelado';
       }
 
-      final completadasRows = ultimoEstadoRows.where(_esCompletada).toList();
+      // "Tu día" = las órdenes de HOY en cualquier estado trabajado
+      // (Completado, No Realizada, En Ruta, Pendiente, Suspendido…), menos
+      // las canceladas y las iniciadas (que van en su propia sección).
+      // Antes solo mostraba "Completado" y, si hoy no había ninguna,
+      // aparecían las completadas de ayer en vez de las de hoy.
+      final hoyStr =
+          '${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
+      bool _esDeHoy(dynamic r) =>
+          (r['fecha_trabajo']?.toString() ?? '').startsWith(hoyStr);
+      bool _esCancelada(dynamic r) =>
+          (r['estado']?.toString() ?? '').toLowerCase() == 'cancelado';
+      final deHoyRows = ultimoEstadoRows
+          .where((r) => _esDeHoy(r) && !_esCancelada(r) && !_esIniciada(r))
+          .toList()
+        ..sort((a, b) => (a['hora_inicio']?.toString() ?? '')
+            .compareTo(b['hora_inicio']?.toString() ?? ''));
+      // Sin órdenes hoy todavía (p. ej. temprano en la mañana): mostrar las
+      // completadas de ayer para no dejar la pantalla vacía.
+      final completadasRows = deHoyRows.isNotEmpty
+          ? deHoyRows
+          : ultimoEstadoRows.where(_esCompletada).toList();
       DateTime _instanteIniciada(dynamic r) {
-        final fp = DateTime.tryParse(r['fecha_proceso']?.toString() ?? '') ?? hoy;
+        // fecha_trabajo (DATE) es la fecha real de la orden en TRAZA;
+        // fecha_proceso viene nulo en esta base.
+        final fp = DateTime.tryParse(r['fecha_trabajo']?.toString() ?? '') ??
+            DateTime.tryParse(r['fecha_proceso']?.toString() ?? '') ??
+            hoy;
         final hi = r['hora_inicio']?.toString() ?? '00:00';
         final partes = hi.split(':');
         final horas = int.tryParse(partes.first) ?? 0;

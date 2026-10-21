@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -659,6 +661,10 @@ class TrazaConsumoService {
         erroresLocales.add({
           'serie': s['serie'],
           'motivo': 'Serie sin SKU en el inventario actual del técnico',
+          // No hay SKU (ese es justo el problema) — se informa el
+          // material según la sábana TOA para que bodega sepa qué cargar.
+          'categoria': s['categoria'],
+          'material_toa': s['nombre'],
         });
         continue;
       }
@@ -736,7 +742,40 @@ class TrazaConsumoService {
     } catch (e) {
       debugPrint('[Traspaso] no se pudo anotar resultado: $e');
     }
+
+    // Aviso por correo a bodega/supervisión cuando el ERP rechaza (total o
+    // parcialmente) la declaración — típicamente series instaladas que no
+    // están cargadas en la bodega del técnico. No bloquea el flujo.
+    if (estado == 'error' || estado == 'parcial') {
+      unawaited(_avisarErrorConsumoPorCorreo(
+        ordenTrabajo: ordenTrabajo,
+        rutTecnico: rutTecnico,
+        estado: estado,
+        anotacion: anotacion,
+      ));
+    }
     return estado;
+  }
+
+  Future<void> _avisarErrorConsumoPorCorreo({
+    required String ordenTrabajo,
+    required String rutTecnico,
+    required String estado,
+    required Map<String, dynamic> anotacion,
+  }) async {
+    try {
+      await _db.functions.invoke('email-error-consumo', body: {
+        'orden_trabajo': ordenTrabajo,
+        'rut_tecnico': rutTecnico,
+        'traspaso_estado': estado,
+        'traspaso_errores': anotacion['traspaso_errores'],
+        'traspaso_id': anotacion['traspaso_id'],
+        'ot_erp_id': anotacion['ot_erp_id'],
+      }).timeout(const Duration(seconds: 15));
+      debugPrint('✅ [Correo] aviso de consumo $estado enviado ($ordenTrabajo)');
+    } catch (e) {
+      debugPrint('⚠️ [Correo] aviso de consumo $estado falló: $e');
+    }
   }
 
   // ── Historial de consumos declarados ──────────────────────────────────────

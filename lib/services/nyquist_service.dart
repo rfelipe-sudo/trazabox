@@ -377,26 +377,34 @@ class NyquistService {
 
       print('🔍 [Nyquist-Sup] Buscando por OT: $ot');
 
-      final response = await _supabase
-          .from('produccion_crea')
-          .select('access_id, tipo_orden, orden_trabajo, estado')
-          .eq('orden_trabajo', ot)
-          .order('hora_inicio', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      // Tipo de red / estado desde `produccion` (TRAZA; en CREA era
+      // produccion_crea con access_id). El Access ID se resuelve en
+      // cascada contra Kepler/TOA + histórico.
+      String tipoRed = '';
+      String estado = '';
+      try {
+        final response = await _supabase
+            .from('produccion')
+            .select('tipo_red_producto, tipo_orden, estado')
+            .eq('orden_trabajo', ot)
+            .order('id', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        tipoRed = response?['tipo_red_producto']?.toString().trim() ??
+            response?['tipo_orden']?.toString() ??
+            '';
+        estado = response?['estado']?.toString() ?? '';
+      } catch (_) {}
 
-      if (response == null) {
-        print('🔍 [Nyquist-Sup] OT no encontrada: $ot');
+      final accessIdCorto = await buscarAccessIdPorOtSupervisor(ot) ?? '';
+      if (accessIdCorto.isEmpty) {
+        print('🔍 [Nyquist-Sup] OT sin Access ID: $ot');
         return null;
       }
-
-      final accessIdCorto = response['access_id']?.toString().trim() ?? '';
-      final tipoRed = response['tipo_orden']?.toString() ?? '';
       print('✅ [Nyquist-Sup] OT=$ot → AccessID=$accessIdCorto | TipoRed=$tipoRed');
 
       var accessFull = accessIdCorto;
-      if (accessIdCorto.isNotEmpty &&
-          !RegExp(r'^\d{1,2}-').hasMatch(accessIdCorto)) {
+      if (!RegExp(r'^\d{1,2}-').hasMatch(accessIdCorto)) {
         accessFull = '$vno-$accessIdCorto';
       }
 
@@ -404,8 +412,8 @@ class NyquistService {
         'access_id': accessFull,
         'tipo_red_producto': tipoRed,
         'orden_de_trabajo': ot,
-        'id_actividad': response['orden_trabajo']?.toString() ?? '',
-        'estado': response['estado']?.toString() ?? '',
+        'id_actividad': ot,
+        'estado': estado,
       };
     } catch (e) {
       print('❌ [Nyquist-Sup] Error en buscarAccessIdPorOT: $e');
@@ -413,18 +421,119 @@ class NyquistService {
     }
   }
 
+  // ── Access ID por OT para el supervisor (cascada de fuentes TRAZA) ────────
+
+  static const String _keplerSabanaUrl =
+      'https://kepler.sbip.cl/api/v1/toa/get_sabana_filtrada';
+
+  static String _accessIdValido(dynamic v) {
+    final s = v?.toString().trim() ?? '';
+    return (s.isEmpty || s.toLowerCase() == 'sin datos') ? '' : s;
+  }
+
+  /// Busca el `Access ID` de una OT en un export TOA de Kepler (iniciadas
+  /// de la empresa o sábana filtrada de una zona).
+  Future<String> _accessIdDesdeExportToa(String url, String ot) async {
+    final response = await http
+        .get(Uri.parse(url), headers: AppConstants.keplerHeaders)
+        .timeout(const Duration(seconds: 60));
+    if (response.statusCode != 200) {
+      print('❌ [Kepler/TOA] HTTP ${response.statusCode} ($url)');
+      return '';
+    }
+    for (final m in _parseToaItems(jsonDecode(response.body))) {
+      final otItem = m['Orden_de_Trabajo']?.toString() ??
+          m['Orden de Trabajo']?.toString() ??
+          '';
+      if (!otCoincide(otItem, ot)) continue;
+      final aid = _accessIdValido(m['Access ID'] ?? m['access_id']);
+      if (aid.isNotEmpty) return aid;
+    }
+    return '';
+  }
+
+  /// Access ID (corto, sin VNO) de cualquier OT — uso supervisor.
+  /// Orden de búsqueda:
+  ///   1. Export TOA de órdenes iniciadas (si la OT sigue iniciada).
+  ///   2. Sábana Kepler del día de la zona de la OT (centro / metro).
+  ///   3. Tablas históricas `access_id_asistente` y `access_id` (Supabase).
+  Future<String?> buscarAccessIdPorOtSupervisor(String ordenTrabajo) async {
+    final ot = ordenTrabajo.trim();
+    if (ot.isEmpty) return null;
+
+    // Zona y estado desde produccion para acotar la búsqueda
+    String zona = '';
+    String estado = '';
+    try {
+      final row = await _supabase
+          .from('produccion')
+          .select('zona, estado')
+          .eq('orden_trabajo', ot)
+          .order('id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      zona = row?['zona']?.toString().trim().toLowerCase() ?? '';
+      estado = row?['estado']?.toString().trim().toLowerCase() ?? '';
+    } catch (_) {}
+
+    // 1. Iniciadas en TOA
+    if (estado.isEmpty || estado == 'iniciado') {
+      try {
+        final aid = await _accessIdDesdeExportToa(_keplerToaUrl, ot);
+        if (aid.isNotEmpty) return aid;
+      } catch (e) {
+        print('⚠️ [Nyquist-Sup] TOA iniciadas: $e');
+      }
+    }
+
+    // 2. Sábana del día (zona conocida primero; si no, ambas)
+    final segmentos = <String>[
+      if (zona.contains('centro')) 'centro',
+      if (zona.contains('rm') || zona.contains('metro')) 'metro',
+    ];
+    if (segmentos.isEmpty) segmentos.addAll(['centro', 'metro']);
+    for (final seg in segmentos) {
+      try {
+        final aid =
+            await _accessIdDesdeExportToa('$_keplerSabanaUrl/$seg/TRAZ', ot);
+        if (aid.isNotEmpty) return aid;
+      } catch (e) {
+        print('⚠️ [Nyquist-Sup] sábana $seg: $e');
+      }
+    }
+
+    // 3. Histórico en Supabase
+    final hist = await buscarAccessIdEnTablaAccesId(ot);
+    if (hist != null && hist.isNotEmpty) return hist;
+    try {
+      final row = await _supabase
+          .from('access_id')
+          .select('access_id')
+          .eq('orden_de_trabajo', ot)
+          .not('access_id', 'is', null)
+          .order('fecha', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final aid = _accessIdValido(row?['access_id']);
+      if (aid.isNotEmpty) return aid;
+    } catch (_) {}
+
+    return null;
+  }
+
   /// Obtiene el tipo_red_producto del técnico (sin requerir orden iniciada,
   /// útil para la card de producción).
   Future<String?> obtenerTipoRedTecnico(String rut) async {
     try {
       final response = await _supabase
-          .from('produccion_crea')
-          .select('tipo_orden')
+          .from('produccion')
+          .select('tipo_red_producto, tipo_orden')
           .eq('rut_tecnico', rut)
-          .order('hora_inicio', ascending: false)
+          .order('id', ascending: false)
           .limit(1)
           .maybeSingle();
-      return response?['tipo_orden']?.toString();
+      final trp = response?['tipo_red_producto']?.toString().trim() ?? '';
+      return trp.isNotEmpty ? trp : response?['tipo_orden']?.toString();
     } catch (_) {
       return null;
     }

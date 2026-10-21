@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -79,6 +80,36 @@ class SesionDispositivoService {
     unawaited(_ejecutarVerificacion());
   }
 
+  static String? _versionReportada;
+
+  /// Escribe `app_version` (y `ultimo_acceso`) en `dispositivos_autorizados`
+  /// vía RPC `registrar_version_app`. Se salta si ya quedó reportada en
+  /// este arranque y coincide con la BD.
+  static Future<void> _reportarVersion(
+    SupabaseClient supabase,
+    String deviceId,
+    String? versionEnBd,
+  ) async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final version = '${info.version}+${info.buildNumber}';
+      if (_versionReportada == version && versionEnBd == version) return;
+      String? modelo;
+      try {
+        modelo = await obtenerModeloDispositivo();
+      } catch (_) {}
+      await supabase.rpc('registrar_version_app', params: {
+        'p_imei': deviceId,
+        'p_app_version': version,
+        'p_modelo': modelo,
+      }).timeout(const Duration(seconds: 10));
+      _versionReportada = version;
+      debugPrint('📦 [Version] reportada al panel: $version');
+    } catch (e) {
+      debugPrint('⚠️ [Version] no se pudo reportar: $e');
+    }
+  }
+
   static Future<void> _ejecutarVerificacion() async {
     if (_enCurso) return;
     if (_inicioApp != null &&
@@ -101,7 +132,7 @@ class SesionDispositivoService {
 
       final row = await supabase
           .from('dispositivos_autorizados')
-          .select('habilitado, rut_tecnico, nombre_tecnico, motivo_bloqueo')
+          .select('habilitado, rut_tecnico, nombre_tecnico, motivo_bloqueo, app_version')
           .eq('imei', deviceId)
           .maybeSingle();
 
@@ -116,6 +147,14 @@ class SesionDispositivoService {
         );
         return;
       }
+
+      // Reportar la versión instalada al panel de control (una vez por
+      // arranque y cada vez que cambie, p. ej. tras actualizar la app).
+      unawaited(_reportarVersion(
+        supabase,
+        deviceId,
+        row['app_version']?.toString(),
+      ));
 
       if (row['habilitado'] == true) {
         final nombreDb = row['nombre_tecnico']?.toString().trim();

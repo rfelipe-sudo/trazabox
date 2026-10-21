@@ -375,10 +375,15 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
       // Idempotente: traspaso_erp_id persistido + candado de saldo.
       final solRow = await _db
           .from('solicitudes_material')
-          .select('traspaso_erp_id')
+          .select('traspaso_erp_id, traspaso_sku, traspaso_sku_por_serie')
           .eq('id', sol.id)
           .maybeSingle();
       int? erpId = (solRow?['traspaso_erp_id'] as num?)?.toInt();
+      String? sku = solRow?['traspaso_sku'] as String?;
+      Map<String, String> skuPorSerie =
+          (solRow?['traspaso_sku_por_serie'] as Map?)
+                  ?.map((k, v) => MapEntry(k.toString(), v.toString())) ??
+              {};
 
       if (erpId == null) {
         final rutOrigen = sol.rutEntregador?.isNotEmpty == true
@@ -399,6 +404,8 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
           'traspaso_errores': r.ok
               ? null
               : [{'motivo': r.detalle, 'traspaso_id': r.traspasoId}],
+          if (r.ok) 'traspaso_sku': r.sku,
+          if (r.ok) 'traspaso_sku_por_serie': r.skuPorSerie,
         }).eq('id', sol.id);
 
         if (!r.ok) {
@@ -409,6 +416,8 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
           return;
         }
         erpId = r.traspasoId;
+        sku = r.sku;
+        skuPorSerie = r.skuPorSerie;
       }
       _traspasoErpId = erpId;
 
@@ -421,6 +430,8 @@ class _GuiaEntregaScreenState extends State<GuiaEntregaScreen> {
         solicitud: sol,
         series: _series,
         traspasoErpId: erpId != null && erpId > 0 ? erpId : null,
+        sku: sku,
+        skuPorSerie: skuPorSerie,
       ));
 
       // Guía PDF desde la fila real de la guía

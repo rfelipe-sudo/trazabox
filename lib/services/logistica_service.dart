@@ -112,17 +112,17 @@ class LogisticaService {
     // 2. Nombres desde nómina
     final Map<String, String> nombrePorRut = {};
     if (ruts.isNotEmpty) {
+      // Nómina TRAZA: tecnicos_traza_zc (en CREA era nomina_tecnicos)
       final nominaRows = await db
-          .from('nomina_tecnicos')
-          .select('rut, nombres, paterno, materno')
+          .from('tecnicos_traza_zc')
+          .select('rut, nombre_completo')
           .inFilter('rut', ruts);
 
       for (final r in nominaRows as List) {
         final rut = r['rut'] as String? ?? '';
-        final nombre =
-            '${r['nombres'] ?? ''} ${r['paterno'] ?? ''} ${r['materno'] ?? ''}'
-                .trim()
-                .replaceAll(RegExp(r'\s+'), ' ');
+        final nombre = (r['nombre_completo']?.toString() ?? '')
+            .trim()
+            .replaceAll(RegExp(r'\s+'), ' ');
         if (rut.isNotEmpty && nombre.isNotEmpty) {
           nombrePorRut[rut] = nombre;
         }
