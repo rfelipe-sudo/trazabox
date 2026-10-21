@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:trazabox/services/update_service.dart';
 
@@ -70,6 +71,7 @@ class _SplashScreenState extends State<SplashScreen>
   void initState() {
     super.initState();
     _updateCheckFuture = UpdateService.checkForUpdate();
+    kUpdateChannel.setMethodCallHandler(_onInstallStatus);
 
     // Aurora
     _aurora = AnimationController(vsync: this, duration: const Duration(seconds: 12))
@@ -127,6 +129,19 @@ class _SplashScreenState extends State<SplashScreen>
     });
   }
 
+  /// Android avisa si la instalación falló o el técnico la canceló: se ofrece reintentar.
+  Future<void> _onInstallStatus(MethodCall call) async {
+    if (call.method != 'installStatus' || !mounted) return;
+    final args = Map<String, dynamic>.from(call.arguments as Map? ?? {});
+    final status = args['status']?.toString() ?? 'failure';
+    final mensaje = status == 'aborted'
+        ? 'La instalación fue cancelada. Pulsa Reintentar para actualizar.'
+        : (args['message']?.toString() ?? 'La instalación no se completó.');
+    setState(() => _actualizando = false);
+    _updateCheckFuture = Future.value(UpdateCheckError(mensaje));
+    await _navegar();
+  }
+
   Future<void> _navegar() async {
     print('🚀 [Splash] Iniciando verificación de actualización...');
     if (!mounted) return;
@@ -170,16 +185,17 @@ class _SplashScreenState extends State<SplashScreen>
               if (!mounted) return;
               setState(() {
                 _progresoAct = 1;
-                _mensajeAct = 'Abriendo el instalador del sistema…';
+                _mensajeAct = 'Instalando… TrazaBox se abrirá sola al terminar.';
               });
             },
           );
           if (!mounted) return false;
-          // El instalador de Android quedó abierto; la app se reabre ya actualizada.
+          // Android instala y relanza la app nueva; si pide confirmación,
+          // el técnico solo toca "Instalar".
           setState(() {
             _progresoAct = 1;
-            _mensajeAct = 'Descarga completa. Completa la instalación en la '
-                'pantalla del sistema y vuelve a abrir TrazaBox.';
+            _mensajeAct = 'Instalando… si Android pregunta, toca "Instalar". '
+                'TrazaBox se abrirá sola al terminar.';
           });
           return false;
         } catch (e) {
@@ -236,6 +252,7 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   void dispose() {
+    kUpdateChannel.setMethodCallHandler(null);
     _aurora.dispose(); _glow.dispose();
     _bienCtrl.dispose(); _letrasCtrl.dispose();
     _dividerCtrl.dispose(); _dotsCtrl.dispose();

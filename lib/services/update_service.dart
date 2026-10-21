@@ -4,8 +4,8 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -20,6 +20,9 @@ const String kGitHubLatestReleaseUrl =
 const String kGitHubApkAssetName = 'app-release.apk';
 
 const String kUpdateApkFileName = 'update.apk';
+
+/// Canal nativo: instala por sesión de PackageInstaller y recibe el estado de la instalación.
+const MethodChannel kUpdateChannel = MethodChannel('com.traza.trazabox/update');
 
 // ─── Resultado de checkForUpdate ───────────────────────────────────────────
 
@@ -270,19 +273,18 @@ class UpdateService {
       onProgress(1);
       onInstalling?.call();
 
-      final result = await OpenFile.open(
-        filePath,
-        type: 'application/vnd.android.package-archive',
-      );
-
-      if (result.type != ResultType.done) {
+      try {
+        await kUpdateChannel.invokeMethod<void>('installApkSession', filePath);
+      } on PlatformException catch (e) {
         throw StateError(
-          result.message.isNotEmpty
-              ? result.message
-              : 'No se pudo abrir el instalador',
+          e.code == 'INSTALL_PERMISSION'
+              ? 'Activa "Instalar apps desconocidas" para TrazaBox en la '
+                  'pantalla que se abrió, vuelve y pulsa Reintentar.'
+              : (e.message ?? 'No se pudo iniciar la instalación'),
         );
       }
 
+      // La sesión ya copió el APK; se borra la descarga.
       _scheduleDeleteUpdateApk(file);
     } on DioException catch (e) {
       final msg = e.type == DioExceptionType.connectionError ||
