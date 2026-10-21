@@ -241,18 +241,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 children: [
                   _buildMiActividadCard(),
                   _buildActionButtons(),
-                  _buildConsumoOrdenesCard(),
                   _buildHistorialAtencion(),
                 ],
               ),
             )
-          : Column(
-              children: [
-                _buildActionButtons(),
-                _buildConsumoOrdenesCard(),
-                _buildTabBar(),
-                Expanded(child: _buildAlertasList()),
-              ],
+          : SingleChildScrollView(
+              child: _buildActionButtons(),
             ),
     );
   }
@@ -454,11 +448,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
           ],
         ),
-        IconButton(
-          icon: const Icon(Icons.logout),
-          tooltip: 'Cerrar sesión',
-          onPressed: _logout,
-        ),
       ],
     );
   }
@@ -581,6 +570,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _puedeVerEquipo
           ? _buildSolicitudesAyudaCard()
           : _buildAyudaTerrenoButton(),
+      _buildConsumoOrdenesCard(),
       if (_puedeVerEquipo)
         _buildActionButton(
           icon: Icons.groups,
@@ -984,11 +974,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
   ];
 
-  /// Card "Consumo Órdenes" (antes en Tu Mes): pendientes del mes cerrado y del mes en curso.
+  /// Card "Consumo Órdenes" (antes en Tu Mes): mismo estilo que los demás
+  /// botones de la grilla, con el mes anterior cerrado y el mes en curso adentro.
   Widget _buildConsumoOrdenesCard() {
     final now = DateTime.now();
     final mesCerrado = now.month == 1 ? 12 : now.month - 1;
     final annoCerrado = now.month == 1 ? now.year - 1 : now.year;
+    const color = Color(0xFF0EA5E9);
 
     Future<void> abrir(int mes, int anno) async {
       await Navigator.of(context).push(
@@ -999,115 +991,113 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _cargarPendientesConsumo();
     }
 
-    Widget periodo({
-      required String titulo,
+    Widget mesFila({
+      required String nombre,
       required IconData icono,
       required int? pendientes,
-      required Color borde,
-      required Color fondo,
+      required bool enCurso,
       required VoidCallback onTap,
     }) {
-      return Expanded(
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: fondo,
-                border: Border.all(color: borde, width: 1.5),
-                borderRadius: BorderRadius.circular(12),
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: enCurso ? 0.28 : 0.16),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: enCurso ? 0.55 : 0.18),
               ),
-              child: Row(
-                children: [
-                  Icon(icono, size: 16, color: Colors.white70),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          titulo.toUpperCase(),
-                          style: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          pendientes == null
-                              ? 'Pendientes: …'
-                              : 'Pendientes: $pendientes',
-                          style: const TextStyle(fontSize: 12, color: Colors.white70),
-                        ),
-                      ],
+            ),
+            child: Row(
+              children: [
+                Icon(icono, size: 12, color: Colors.white70),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    nombre.toUpperCase(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.4,
                     ),
                   ),
-                  const Icon(Icons.arrow_forward_ios, size: 12, color: Colors.white38),
-                ],
-              ),
+                ),
+                Text(
+                  pendientes == null ? '…' : '$pendientes',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(width: 2),
+                const Icon(Icons.chevron_right, size: 14, color: Colors.white70),
+              ],
             ),
           ),
         ),
       );
     }
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0EA5E9), Color(0xFF1D4ED8)],
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.receipt_long, size: 18, color: Color(0xFF00D9FF)),
-                SizedBox(width: 8),
-                Text(
-                  'Consumo Órdenes',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                periodo(
-                  titulo: _nombresMes[mesCerrado - 1],
-                  icono: Icons.lock_outline,
-                  pendientes: _consumoPendCerrado,
-                  borde: Colors.white24,
-                  fondo: Colors.white.withValues(alpha: 0.05),
-                  onTap: () => abrir(mesCerrado, annoCerrado),
-                ),
-                const SizedBox(width: 8),
-                periodo(
-                  titulo: _nombresMes[now.month - 1],
-                  icono: Icons.hourglass_bottom,
-                  pendientes: _consumoPendActual,
-                  borde: const Color(0xFF16A34A),
-                  fondo: const Color(0xFF16A34A).withValues(alpha: 0.18),
-                  onTap: () => abrir(now.month, now.year),
-                ),
-              ],
-            ),
-          ],
-        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-    );
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.receipt_long, size: 16, color: Colors.white),
+              SizedBox(width: 6),
+              Text(
+                'Consumo Órdenes',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          mesFila(
+            nombre: _nombresMes[mesCerrado - 1],
+            icono: Icons.lock_outline,
+            pendientes: _consumoPendCerrado,
+            enCurso: false,
+            onTap: () => abrir(mesCerrado, annoCerrado),
+          ),
+          const SizedBox(height: 4),
+          mesFila(
+            nombre: _nombresMes[now.month - 1],
+            icono: Icons.hourglass_bottom,
+            pendientes: _consumoPendActual,
+            enCurso: true,
+            onTap: () => abrir(now.month, now.year),
+          ),
+        ],
+      ),
+    ).animate().scale(begin: const Offset(0.95, 0.95));
   }
 
   Widget _buildActionButton({
