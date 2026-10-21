@@ -23,7 +23,7 @@ import 'package:trazabox/screens/ayuda_terreno_screen.dart';
 import 'package:trazabox/screens/supervisor/solicitudes_ayuda_screen.dart';
 import 'package:trazabox/screens/supervisor/mi_actividad_screen.dart';
 import 'package:trazabox/screens/solicitud_material_screen.dart';
-import 'package:trazabox/screens/consumo_materiales_screen.dart';
+import 'package:trazabox/screens/consumo_ordenes_screen.dart';
 import 'package:trazabox/services/traza_consumo_service.dart';
 import 'package:trazabox/services/auth_service.dart';
 import 'package:trazabox/services/ayuda_service.dart';
@@ -47,7 +47,8 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
   final _authService = AuthService();
   bool _puedeVerEquipo = false;
@@ -63,13 +64,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    
+
     // Registrar observer para detectar cuando la app se cierra
     WidgetsBinding.instance.addObserver(this);
-    
+
     // Activar wakelock para mantener pantalla encendida
     WakelockPlus.enable();
-    
+
     // Verificar si puede ver equipo
     _checkPuedeVerEquipo();
     _checkAyudaPendiente();
@@ -85,7 +86,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _cargarComunicadosSinLeer() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rut = prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
+      final rut =
+          prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
       if (rut.isEmpty) return;
       final pendiente = await ComunicadoService.instance.obtenerPendiente(rut);
       if (!mounted) return;
@@ -105,9 +107,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => _BuzonComunicados(rut: rut, onLeido: () {
-        _cargarComunicadosSinLeer();
-      }),
+      builder: (ctx) => _BuzonComunicados(
+        rut: rut,
+        onLeido: () {
+          _cargarComunicadosSinLeer();
+        },
+      ),
     );
     _cargarComunicadosSinLeer();
     _cargarPendientesConsumo();
@@ -116,14 +121,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _cargarPendientesConsumo() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rut = prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
+      final rut =
+          prefs.getString('rut_tecnico') ?? prefs.getString('rut') ?? '';
       if (rut.isEmpty) return;
       final now = DateTime.now();
       final mesCerrado = now.month == 1 ? 12 : now.month - 1;
       final annoCerrado = now.month == 1 ? now.year - 1 : now.year;
       final svc = TrazaConsumoService();
-      final cerrado = await svc.contarPendientesMes(rut: rut, mes: mesCerrado, anno: annoCerrado);
-      final actual = await svc.contarPendientesMes(rut: rut, mes: now.month, anno: now.year);
+      final cerrado = await svc.contarPendientesMes(
+        rut: rut,
+        mes: mesCerrado,
+        anno: annoCerrado,
+      );
+      final actual = await svc.contarPendientesMes(
+        rut: rut,
+        mes: now.month,
+        anno: now.year,
+      );
       if (!mounted) return;
       setState(() {
         _consumoPendCerrado = cerrado;
@@ -137,14 +151,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    
+
     // ═══════════════════════════════════════════════════════════
     // DETENER ALARMAS CUANDO LA APP SE CIERRA O VA A BACKGROUND
     // ═══════════════════════════════════════════════════════════
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.detached) {
-      print('🔇 [HomeScreen] App en background/detenida - Deteniendo alarmas...');
+      print(
+        '🔇 [HomeScreen] App en background/detenida - Deteniendo alarmas...',
+      );
       _detenerAlarmas();
     }
 
@@ -174,10 +190,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void dispose() {
     // Desregistrar observer
     WidgetsBinding.instance.removeObserver(this);
-    
+
     // Detener alarmas antes de cerrar
     _detenerAlarmas();
-    
+
     // Desactivar wakelock al salir
     WakelockPlus.disable();
     _tabController.dispose();
@@ -186,9 +202,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   void _navigateToAlerta(Alerta alerta) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AlertaDetailScreen(alerta: alerta),
-      ),
+      MaterialPageRoute(builder: (_) => AlertaDetailScreen(alerta: alerta)),
     );
   }
 
@@ -214,7 +228,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ],
       ),
     );
-    
+
     if (confirmed == true && mounted) {
       AyudaService().detenerMonitoreoGlobal();
       await context.read<AuthProvider>().logout();
@@ -222,12 +236,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final usuario = auth.usuario;
-    
+
     if (usuario == null) {
       return const RegistroScreen();
     }
@@ -245,30 +258,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 ],
               ),
             )
-          : SingleChildScrollView(
-              child: _buildActionButtons(),
-            ),
+          : SingleChildScrollView(child: _buildActionButtons()),
     );
   }
 
   /// Probar el sistema de detección de fraude
   Future<void> _probarDeteccionFraude(BuildContext context) async {
     final deteccionService = DeteccionCaminataService();
-    
+
     // Asegurarse de que el servicio esté corriendo
     await deteccionService.iniciarServicio();
-    
+
     // Obtener ubicación actual para usar como punto de trabajo
     Position? posicionActual;
     try {
       posicionActual = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      print('📍 Ubicación actual: ${posicionActual.latitude}, ${posicionActual.longitude}');
+      print(
+        '📍 Ubicación actual: ${posicionActual.latitude}, ${posicionActual.longitude}',
+      );
     } catch (e) {
       print('❌ Error obteniendo ubicación: $e');
     }
-    
+
     // Simular orden iniciada con ubicación actual
     deteccionService.iniciarTrabajo(
       ot: 'TEST-${DateTime.now().millisecondsSinceEpoch}',
@@ -278,7 +291,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       latTrabajo: posicionActual?.latitude,
       lngTrabajo: posicionActual?.longitude,
     );
-    
+
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -306,26 +319,41 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A2C3D),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(children: [
-          Icon(Icons.info_outline, color: Color(0xFF00BCD4), size: 22),
-          SizedBox(width: 8),
-          Text('TrazaBox', style: TextStyle(color: Colors.white, fontSize: 16)),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('Versión $version',
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline, color: Color(0xFF00BCD4), size: 22),
+            SizedBox(width: 8),
+            Text(
+              'TrazaBox',
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Versión $version',
               style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          Text('Build $build',
-              style: const TextStyle(color: Color(0xFF8FA8C8), fontSize: 13)),
-        ]),
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Build $build',
+              style: const TextStyle(color: Color(0xFF8FA8C8), fontSize: 13),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cerrar',
-                style: TextStyle(color: Color(0xFF00BCD4))),
+            child: const Text(
+              'Cerrar',
+              style: TextStyle(color: Color(0xFF00BCD4)),
+            ),
           ),
         ],
       ),
@@ -347,7 +375,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
-                usuario.esTecnico ? Icons.engineering : Icons.supervisor_account,
+                usuario.esTecnico
+                    ? Icons.engineering
+                    : Icons.supervisor_account,
                 color: Colors.white,
                 size: 20,
               ),
@@ -394,7 +424,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ? () {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('📅 Tu Mes — Próximamente disponible para supervisores'),
+                      content: Text(
+                        '📅 Tu Mes — Próximamente disponible para supervisores',
+                      ),
                       backgroundColor: Color(0xFF1A2D50),
                       duration: Duration(seconds: 2),
                     ),
@@ -402,9 +434,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 }
               : () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const TuMesScreen(),
-                    ),
+                    MaterialPageRoute(builder: (_) => const TuMesScreen()),
                   );
                 },
         ),
@@ -458,24 +488,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final estado = svc.estadoActual;
         final activo = estado?.estaActivo ?? false;
         return GestureDetector(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const MiActividadScreen()),
-          ),
+          onTap: () => Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const MiActividadScreen())),
           child: Container(
             margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  const Color(0xFF1A2E42),
-                  const Color(0xFF0D1B2A),
-                ],
+                colors: [const Color(0xFF1A2E42), const Color(0xFF0D1B2A)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: activo ? const Color(0xFFFF9500).withOpacity(0.6) : Colors.white12,
+                color: activo
+                    ? const Color(0xFFFF9500).withOpacity(0.6)
+                    : Colors.white12,
                 width: 1,
               ),
             ),
@@ -484,12 +513,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: (activo ? const Color(0xFFFF9500) : const Color(0xFF00E5FF)).withOpacity(0.2),
+                    color:
+                        (activo
+                                ? const Color(0xFFFF9500)
+                                : const Color(0xFF00E5FF))
+                            .withOpacity(0.2),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Icon(
                     activo ? Icons.pending_actions : Icons.check_circle_outline,
-                    color: activo ? const Color(0xFFFF9500) : const Color(0xFF00E5FF),
+                    color: activo
+                        ? const Color(0xFFFF9500)
+                        : const Color(0xFF00E5FF),
                     size: 24,
                   ),
                 ),
@@ -511,8 +546,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       Text(
                         activo
                             ? (estado?.nombreTecnicoActivo != null
-                                ? '→ ${estado!.nombreTecnicoActivo}'
-                                : 'Actividad en curso')
+                                  ? '→ ${estado!.nombreTecnicoActivo}'
+                                  : 'Actividad en curso')
                             : 'Sin actividad',
                         style: TextStyle(
                           color: Colors.white.withOpacity(0.7),
@@ -522,7 +557,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ],
                   ),
                 ),
-                const Icon(Icons.arrow_forward_ios, color: Colors.white38, size: 14),
+                const Icon(
+                  Icons.arrow_forward_ios,
+                  color: Colors.white38,
+                  size: 14,
+                ),
               ],
             ),
           ),
@@ -603,7 +642,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final prefs = await SharedPreferences.getInstance();
     final ticket = prefs.getString('ayuda_ticket_activo');
     if (mounted) {
-      setState(() => _tieneAyudaPendiente = ticket != null && ticket.isNotEmpty);
+      setState(
+        () => _tieneAyudaPendiente = ticket != null && ticket.isNotEmpty,
+      );
     }
   }
 
@@ -616,7 +657,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
     if (puede) {
       final prefs = await SharedPreferences.getInstance();
-      final rut = prefs.getString('rut_supervisor') ??
+      final rut =
+          prefs.getString('rut_supervisor') ??
           prefs.getString('rut_tecnico') ??
           prefs.getString('user_rut');
       if (rut != null && rut.isNotEmpty) {
@@ -626,9 +668,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         svc.suscribirRealtime(rut);
         // Pre-cargar solicitudes para badge en card
         await AyudaService().cargarSolicitudesSupervisor(rut);
-        if (mounted) setState(() {
-          _historialAtencionFuture = AyudaService().obtenerHistorialAtencionDia(rut);
-        });
+        if (mounted)
+          setState(() {
+            _historialAtencionFuture = AyudaService()
+                .obtenerHistorialAtencionDia(rut);
+          });
       }
     }
     // Si es supervisor/ITO, iniciar canal global de monitoreo
@@ -641,9 +685,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _iniciarMonitoreoGlobalSiSupervisor() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rut = prefs.getString('rut_supervisor') ??
+      final rut =
+          prefs.getString('rut_supervisor') ??
           prefs.getString('rut_tecnico') ??
-          prefs.getString('user_rut') ?? '';
+          prefs.getString('user_rut') ??
+          '';
       if (rut.isEmpty) return;
 
       // Solicitar ignorar optimización de batería (ayuda a que el servicio
@@ -666,7 +712,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (!isRunning) {
           await DeteccionCaminataService().inicializar();
           await bgService.startService();
-          debugPrint('🚀 [HomeScreen] Background service iniciado para supervisor');
+          debugPrint(
+            '🚀 [HomeScreen] Background service iniciado para supervisor',
+          );
         }
       } catch (e) {
         debugPrint('⚠️ [HomeScreen] BG service: $e');
@@ -695,17 +743,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               onTap: () async {
                 await Navigator.of(context).push(
                   MaterialPageRoute(
-                      builder: (_) => const SolicitudesAyudaScreen()),
+                    builder: (_) => const SolicitudesAyudaScreen(),
+                  ),
                 );
                 if (mounted) {
                   final prefs = await SharedPreferences.getInstance();
-                  final rut = prefs.getString('rut_supervisor') ??
+                  final rut =
+                      prefs.getString('rut_supervisor') ??
                       prefs.getString('rut_tecnico') ??
-                      prefs.getString('user_rut') ?? '';
+                      prefs.getString('user_rut') ??
+                      '';
                   if (rut.isNotEmpty && mounted) {
                     setState(() {
-                      _historialAtencionFuture =
-                          AyudaService().obtenerHistorialAtencionDia(rut);
+                      _historialAtencionFuture = AyudaService()
+                          .obtenerHistorialAtencionDia(rut);
                     });
                   }
                 }
@@ -768,7 +819,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             children: [
               // Título estilo tab/alertas DX
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFF161B22).withOpacity(0.5),
                   borderRadius: const BorderRadius.vertical(
@@ -809,7 +863,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     final tipo = item['tipo'] as String? ?? 'ayuda';
                     final (tipoDisplay, colorTipo) = _historialTipoInfo(tipo);
                     final tiempoMin = item['tiempo_min'] as int? ?? 0;
-                    final nombre = item['nombre_tecnico'] as String? ?? 'Técnico';
+                    final nombre =
+                        item['nombre_tecnico'] as String? ?? 'Técnico';
                     return Container(
                       margin: const EdgeInsets.only(bottom: 10),
                       padding: const EdgeInsets.all(12),
@@ -942,8 +997,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
           onTap: () async {
             await Navigator.of(context).push(
-              MaterialPageRoute(
-                  builder: (_) => const AyudaTerrenoScreen()),
+              MaterialPageRoute(builder: (_) => const AyudaTerrenoScreen()),
             );
             // Al volver, re-verificar si hay solicitud activa
             _checkAyudaPendiente();
@@ -970,8 +1024,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   static const _nombresMes = [
-    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+    'Enero',
+    'Febrero',
+    'Marzo',
+    'Abril',
+    'Mayo',
+    'Junio',
+    'Julio',
+    'Agosto',
+    'Septiembre',
+    'Octubre',
+    'Noviembre',
+    'Diciembre',
   ];
 
   /// Card "Consumo Órdenes" (antes en Tu Mes): mismo estilo que los demás
@@ -982,10 +1046,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final annoCerrado = now.month == 1 ? now.year - 1 : now.year;
     const color = Color(0xFF0EA5E9);
 
-    Future<void> abrir(int mes, int anno) async {
+    Future<void> abrir() async {
       await Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => ConsumoMaterialesScreen(mes: mes, anno: anno),
+          builder: (_) => ConsumoOrdenesScreen(
+            pendientesCerrado: _consumoPendCerrado,
+            pendientesActual: _consumoPendActual,
+          ),
         ),
       );
       _cargarPendientesConsumo();
@@ -996,106 +1063,101 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       required IconData icono,
       required int? pendientes,
       required bool enCurso,
-      required VoidCallback onTap,
     }) {
-      return Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: enCurso ? 0.28 : 0.16),
           borderRadius: BorderRadius.circular(8),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: enCurso ? 0.28 : 0.16),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: enCurso ? 0.55 : 0.18),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: enCurso ? 0.55 : 0.18),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icono, size: 12, color: Colors.white70),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                nombre.toUpperCase(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.4,
+                ),
               ),
             ),
-            child: Row(
-              children: [
-                Icon(icono, size: 12, color: Colors.white70),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    nombre.toUpperCase(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.4,
-                    ),
-                  ),
-                ),
-                Text(
-                  pendientes == null ? '…' : '$pendientes',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(width: 2),
-                const Icon(Icons.chevron_right, size: 14, color: Colors.white70),
-              ],
+            Text(
+              pendientes == null ? '…' : '$pendientes',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
             ),
-          ),
+          ],
         ),
       );
     }
 
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF0EA5E9), Color(0xFF1D4ED8)],
-        ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: abrir,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(0.3),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.receipt_long, size: 16, color: Colors.white),
-              SizedBox(width: 6),
-              Text(
-                'Consumo Órdenes',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                ),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0EA5E9), Color(0xFF1D4ED8)],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: color.withOpacity(0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          mesFila(
-            nombre: _nombresMes[mesCerrado - 1],
-            icono: Icons.lock_outline,
-            pendientes: _consumoPendCerrado,
-            enCurso: false,
-            onTap: () => abrir(mesCerrado, annoCerrado),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.receipt_long, size: 16, color: Colors.white),
+                  SizedBox(width: 6),
+                  Text(
+                    'Consumo Órdenes',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              mesFila(
+                nombre: _nombresMes[mesCerrado - 1],
+                icono: Icons.lock_outline,
+                pendientes: _consumoPendCerrado,
+                enCurso: false,
+              ),
+              const SizedBox(height: 4),
+              mesFila(
+                nombre: _nombresMes[now.month - 1],
+                icono: Icons.hourglass_bottom,
+                pendientes: _consumoPendActual,
+                enCurso: true,
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
-          mesFila(
-            nombre: _nombresMes[now.month - 1],
-            icono: Icons.hourglass_bottom,
-            pendientes: _consumoPendActual,
-            enCurso: true,
-            onTap: () => abrir(now.month, now.year),
-          ),
-        ],
+        ),
       ),
     ).animate().scale(begin: const Offset(0.95, 0.95));
   }
@@ -1131,7 +1193,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(icon, size: 32, color: proximamente ? Colors.white38 : Colors.white),
+                    Icon(
+                      icon,
+                      size: 32,
+                      color: proximamente ? Colors.white38 : Colors.white,
+                    ),
                     const SizedBox(height: 8),
                     Text(
                       label,
@@ -1150,14 +1216,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   top: 6,
                   right: 6,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 5,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.black45,
                       borderRadius: BorderRadius.circular(5),
                     ),
                     child: const Text(
                       'Próximo',
-                      style: TextStyle(color: Colors.white54, fontSize: 8, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),
@@ -1202,37 +1275,36 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: CircularProgressIndicator(color: Color(0xFF00D9FF)),
           );
         }
-        
+
         return TabBarView(
           controller: _tabController,
           children: [
             // Tab 1: Pendientes (todas las alertas que NO están resueltas)
-            _buildListaAlertas(
-              [
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.pendiente),
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.enAtencion),
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.postergada),
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.enRevisionCalidad),
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.escalada),
-              ],
-              emptyMessage: 'No hay alertas pendientes',
-            ),
-            
+            _buildListaAlertas([
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.pendiente),
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.enAtencion),
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.postergada),
+              ...alertasProvider.alertasPorEstado(
+                EstadoAlerta.enRevisionCalidad,
+              ),
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.escalada),
+            ], emptyMessage: 'No hay alertas pendientes'),
+
             // Tab 2: Historial (SOLO alertas resueltas: regularizada o cerrada)
-            _buildListaAlertas(
-              [
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.regularizada),
-                ...alertasProvider.alertasPorEstado(EstadoAlerta.cerrada),
-              ],
-              emptyMessage: 'No hay historial de alertas',
-            ),
+            _buildListaAlertas([
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.regularizada),
+              ...alertasProvider.alertasPorEstado(EstadoAlerta.cerrada),
+            ], emptyMessage: 'No hay historial de alertas'),
           ],
         );
       },
     );
   }
 
-  Widget _buildListaAlertas(List<Alerta> alertas, {required String emptyMessage}) {
+  Widget _buildListaAlertas(
+    List<Alerta> alertas, {
+    required String emptyMessage,
+  }) {
     if (alertas.isEmpty) {
       return Center(
         child: Column(
@@ -1246,16 +1318,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             const SizedBox(height: 16),
             Text(
               emptyMessage,
-              style: const TextStyle(
-                color: Color(0xFF8FA8C8),
-                fontSize: 16,
-              ),
+              style: const TextStyle(color: Color(0xFF8FA8C8), fontSize: 16),
             ),
           ],
         ),
       );
     }
-    
+
     return RefreshIndicator(
       onRefresh: () async {
         final auth = context.read<AuthProvider>();
@@ -1324,7 +1393,10 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
       final leidos = <String>{};
       for (final row in lecturas as List) {
         final m = Map<String, dynamic>.from(row as Map);
-        if (LogisticaService.sameRut(m['rut_tecnico']?.toString() ?? '', canon)) {
+        if (LogisticaService.sameRut(
+          m['rut_tecnico']?.toString() ?? '',
+          canon,
+        )) {
           final id = m['comunicado_id'] as String?;
           if (id != null) leidos.add(id);
         }
@@ -1359,7 +1431,9 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
 
   @override
   Widget build(BuildContext context) {
-    final noLeidos = _comunicados.where((c) => !_leidos.contains(c['id'])).length;
+    final noLeidos = _comunicados
+        .where((c) => !_leidos.contains(c['id']))
+        .length;
 
     return DraggableScrollableSheet(
       expand: false,
@@ -1384,7 +1458,11 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
                 const SizedBox(height: 14),
                 Row(
                   children: [
-                    const Icon(Icons.inbox_rounded, color: Color(0xFF00BCD4), size: 22),
+                    const Icon(
+                      Icons.inbox_rounded,
+                      color: Color(0xFF00BCD4),
+                      size: 22,
+                    ),
                     const SizedBox(width: 10),
                     const Text(
                       'Comunicados',
@@ -1397,7 +1475,10 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
                     const Spacer(),
                     if (noLeidos > 0)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xFF00BCD4),
                           borderRadius: BorderRadius.circular(10),
@@ -1412,7 +1493,11 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
                         ),
                       ),
                     IconButton(
-                      icon: const Icon(Icons.refresh, color: Colors.white38, size: 20),
+                      icon: const Icon(
+                        Icons.refresh,
+                        color: Colors.white38,
+                        size: 20,
+                      ),
                       onPressed: _cargar,
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(),
@@ -1426,109 +1511,115 @@ class _BuzonComunicadosState extends State<_BuzonComunicados> {
           // Lista
           Expanded(
             child: _cargando
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF00BCD4)))
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF00BCD4)),
+                  )
                 : _comunicados.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'No hay comunicados',
-                          style: TextStyle(color: Colors.white38),
-                        ),
-                      )
-                    : ListView.builder(
-                        controller: ctrl,
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                        itemCount: _comunicados.length,
-                        itemBuilder: (_, i) {
-                          final c = _comunicados[i];
-                          final id = c['id'] as String? ?? '';
-                          final leido = _leidos.contains(id);
-                          final titulo = c['titulo'] as String? ?? 'Comunicado';
-                          final fecha = _formatFecha(c['created_at'] as String?);
+                ? const Center(
+                    child: Text(
+                      'No hay comunicados',
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: ctrl,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                    itemCount: _comunicados.length,
+                    itemBuilder: (_, i) {
+                      final c = _comunicados[i];
+                      final id = c['id'] as String? ?? '';
+                      final leido = _leidos.contains(id);
+                      final titulo = c['titulo'] as String? ?? 'Comunicado';
+                      final fecha = _formatFecha(c['created_at'] as String?);
 
-                          return GestureDetector(
-                            onTap: leido ? null : () => _abrirComunicado(c),
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
+                      return GestureDetector(
+                        onTap: leido ? null : () => _abrirComunicado(c),
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: leido
+                                ? const Color(0xFF0D1B2A)
+                                : const Color(0xFF0D2A3A),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: leido
+                                  ? Colors.white12
+                                  : const Color(
+                                      0xFF00BCD4,
+                                    ).withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                leido
+                                    ? Icons.mark_email_read_outlined
+                                    : Icons.mark_email_unread_outlined,
                                 color: leido
-                                    ? const Color(0xFF0D1B2A)
-                                    : const Color(0xFF0D2A3A),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: leido
-                                      ? Colors.white12
-                                      : const Color(0xFF00BCD4).withValues(alpha: 0.5),
+                                    ? Colors.white24
+                                    : const Color(0xFF00BCD4),
+                                size: 22,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      titulo,
+                                      style: TextStyle(
+                                        color: leido
+                                            ? Colors.white38
+                                            : Colors.white,
+                                        fontWeight: leido
+                                            ? FontWeight.normal
+                                            : FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      fecha,
+                                      style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    leido
-                                        ? Icons.mark_email_read_outlined
-                                        : Icons.mark_email_unread_outlined,
-                                    color: leido
-                                        ? Colors.white24
-                                        : const Color(0xFF00BCD4),
-                                    size: 22,
+                              if (!leido)
+                                const Icon(
+                                  Icons.chevron_right,
+                                  color: Color(0xFF00BCD4),
+                                  size: 18,
+                                ),
+                              if (leido)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
                                   ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          titulo,
-                                          style: TextStyle(
-                                            color: leido
-                                                ? Colors.white38
-                                                : Colors.white,
-                                            fontWeight: leido
-                                                ? FontWeight.normal
-                                                : FontWeight.bold,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 3),
-                                        Text(
-                                          fecha,
-                                          style: const TextStyle(
-                                            color: Colors.white38,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ],
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: const Text(
+                                    'LEÍDO',
+                                    style: TextStyle(
+                                      color: Colors.green,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  if (!leido)
-                                    const Icon(
-                                      Icons.chevron_right,
-                                      color: Color(0xFF00BCD4),
-                                      size: 18,
-                                    ),
-                                  if (leido)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: Colors.green.withValues(alpha: 0.15),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: const Text(
-                                        'LEÍDO',
-                                        style: TextStyle(
-                                          color: Colors.green,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
         ],
       ),

@@ -299,10 +299,75 @@ class _HistorialConsumosScreenState extends State<HistorialConsumosScreen> {
       );
     }
 
-    return ListView.builder(
+    // Agrupado por fecha de ejecución de la orden (más reciente primero).
+    final porDia = <String, List<ConsumoDeclarado>>{};
+    for (final c in consumos) {
+      porDia.putIfAbsent(_claveDia(c.fechaTrabajo), () => []).add(c);
+    }
+    final dias = porDia.keys.toList()..sort((a, b) => b.compareTo(a));
+
+    final items = <Widget>[];
+    for (final dia in dias) {
+      final lista = porDia[dia]!;
+      items.add(_cabeceraDia(dia, lista.length));
+      items.addAll(lista.map(_buildCardConsumo));
+    }
+
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: consumos.length,
-      itemBuilder: (_, i) => _buildCardConsumo(consumos[i]),
+      children: items,
+    );
+  }
+
+  /// Clave ordenable 'YYYY-MM-DD'; sin fecha → '' (queda al final).
+  String _claveDia(String fecha) {
+    try {
+      final d = DateTime.parse(fecha);
+      return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _cabeceraDia(String clave, int cantidad) {
+    const diasLargo = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    String titulo;
+    try {
+      final d = DateTime.parse(clave);
+      titulo = '${diasLargo[d.weekday]} ${d.day} de ${_nombresMesHist[d.month].toLowerCase()}';
+    } catch (_) {
+      titulo = 'Sin fecha de ejecución';
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 14, 2, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.event, size: 14, color: _accent),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              titulo.toUpperCase(),
+              style: const TextStyle(
+                color: _textPrim,
+                fontSize: 11.5,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: _accentDim,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '$cantidad ${cantidad == 1 ? 'orden' : 'órdenes'}',
+              style: const TextStyle(color: _accent, fontSize: 10.5, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
