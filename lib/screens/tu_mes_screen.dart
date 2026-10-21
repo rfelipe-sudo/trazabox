@@ -5,14 +5,12 @@ import '../services/tag_service.dart';
 import '../services/produccion_service.dart';
 import '../services/calidad_traza_service.dart';
 import '../services/reversa_service.dart';
-import '../services/traza_consumo_service.dart';
 import '../widgets/creaciones_loading.dart';
 import 'anexo_remuneraciones_screen.dart';
 import 'detalle_tag_screen.dart';
 import 'calidad_screen.dart';
 import 'calidad_detalle_screen.dart';
 import 'produccion_screen.dart';
-import 'consumo_materiales_screen.dart';
 import 'reversa_screen.dart';
 
 class TuMesScreen extends StatefulWidget {
@@ -50,9 +48,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
   Map<String, dynamic>? _produccionCerrado;  // Mes - 1 (cerrado)
   Map<String, dynamic>? _produccionActual;   // Mes 0 (en curso)
   
-  // Consumo - períodos
-  Map<String, dynamic>? _consumoCerrado;   // Mes anterior cerrado
-  Map<String, dynamic>? _consumoActual;    // Mes actual en curso
   
   // Reversa - períodos
   Map<String, dynamic>? _reversaCerrado;   // Mes anterior cerrado
@@ -104,8 +99,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
     // Cargar porcentaje de reiteración (calidad)
     await _cargarReiteracionCalidad();
 
-    // Cargar estadísticas de consumo
-    await _cargarEstadisticasConsumo();
 
     setState(() => _cargando = false);
   }
@@ -287,58 +280,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
     }
   }
 
-  Future<void> _cargarEstadisticasConsumo() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final rutTecnico = prefs.getString('rut_tecnico');
-      
-      if (rutTecnico != null) {
-        final now = DateTime.now();
-        
-        // Mes anterior cerrado
-        final mesCerrado = now.month - 1 < 1 ? 12 : now.month - 1;
-        final annoCerrado = now.month - 1 < 1 ? now.year - 1 : now.year;
-        
-        // Mes actual en curso
-        final mesActual = now.month;
-        final annoActual = now.year;
-        
-        // OTs completadas del mes SIN consumo declarado (pendientes)
-        final consumoService = TrazaConsumoService();
-        final pendientesCerrado = await consumoService.contarPendientesMes(
-          rut: rutTecnico,
-          mes: mesCerrado,
-          anno: annoCerrado,
-        );
-        final pendientesActual = await consumoService.contarPendientesMes(
-          rut: rutTecnico,
-          mes: mesActual,
-          anno: annoActual,
-        );
-
-        // La card lee la clave 'total'
-        final estadisticasCerrado = {'total': pendientesCerrado};
-        final estadisticasActual = {'total': pendientesActual};
-        
-        setState(() {
-          _consumoCerrado = estadisticasCerrado;
-          _consumoActual = estadisticasActual;
-        });
-      } else {
-        setState(() {
-          _consumoCerrado = null;
-          _consumoActual = null;
-        });
-      }
-    } catch (e) {
-      print('⚠️ [TuMes] Error cargando consumo: $e');
-      setState(() {
-        _consumoCerrado = null;
-        _consumoActual = null;
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
@@ -423,11 +364,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
 
                     // Card Producción completo con dos períodos
                     _buildCardProduccionCompleto(),
-
-                    const SizedBox(height: 12),
-
-                    // Card Consumo completo con dos períodos
-                    _buildCardConsumoCompleto(),
 
                     const SizedBox(height: 12),
 
@@ -2001,184 +1937,6 @@ class _TuMesScreenState extends State<TuMesScreen> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  /// Widget para mostrar el card de Consumo completo con dos períodos
-  Widget _buildCardConsumoCompleto() {
-    final now = DateTime.now();
-    
-    // Período cerrado (mes anterior)
-    final mesCerrado = now.month - 1 < 1 ? 12 : now.month - 1;
-    final annoCerrado = now.month - 1 < 1 ? now.year - 1 : now.year;
-    final nombreMesCerrado = _getNombreMes(mesCerrado);
-    
-    final totalCerrado = (_consumoCerrado?['total'] as int?) ?? 0;
-    
-    // Período actual (mes actual)
-    final mesActual = now.month;
-    final annoActual = now.year;
-    final nombreMesActual = _getNombreMes(mesActual);
-    final diasRestantes = DateTime(annoActual, mesActual + 1, 0).day - now.day;
-    
-    final totalActual = (_consumoActual?['total'] as int?) ?? 0;
-    
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header centrado
-            Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.receipt_long, color: Colors.blue[700]),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Consumo Órdenes',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            
-            // Dos columnas para los períodos
-            IntrinsicHeight(
-              child: Row(
-                children: [
-                  // IZQUIERDA: Período CERRADO
-                  Expanded(
-                    child: InkWell(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => ConsumoMaterialesScreen(
-                                mes: mesCerrado, anno: annoCerrado)),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[850],
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Título
-                            Row(
-                              children: [
-                                const Icon(Icons.lock, size: 14, color: Colors.white),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    'PENDIENTES ${nombreMesCerrado.toUpperCase()}',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            // Total
-                            Text(
-                              'Total: $totalCerrado',
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                            ),
-                            const SizedBox(height: 8),
-                            // Estado
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.grey[700],
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                'Periodo cerrado',
-                                style: TextStyle(fontSize: 9, color: Colors.white70),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // DERECHA: Período ACTUAL
-                  Expanded(
-                    child: InkWell(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => ConsumoMaterialesScreen(
-                                mes: mesActual, anno: annoActual)),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.green.withOpacity(0.2),
-                          border: Border.all(color: Colors.green, width: 2),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Título
-                            Row(
-                              children: [
-                                const Icon(Icons.hourglass_empty, size: 14, color: Colors.white),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    'PENDIENTES ${nombreMesActual.toUpperCase()}',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            // Total
-                            Text(
-                              'Total: $totalActual',
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                            ),
-                            const SizedBox(height: 8),
-                            // Estado
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.black45,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                'Cierra en $diasRestantes días',
-                                style: const TextStyle(fontSize: 9, color: Colors.white),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
         ),
       ),
     );
