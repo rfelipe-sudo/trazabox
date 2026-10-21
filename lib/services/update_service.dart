@@ -3,14 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// Poner en true para reactivar el chequeo automático de actualizaciones.
-const bool kUpdateCheckEnabled = false;
+// Chequeo automático contra GitHub Releases en el arranque (splash). false solo para pruebas locales.
+const bool kUpdateCheckEnabled = true;
 
 /// URL de la última release (API pública GitHub).
 const String kGitHubLatestReleaseUrl =
