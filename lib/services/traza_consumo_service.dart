@@ -8,6 +8,11 @@ import '../models/inventario_material.dart';
 import 'kepler_sabana_service.dart';
 import 'traza_proxy_service.dart';
 
+/// Corte de "pendientes de consumo": solo cuentan OTs completadas desde esta
+/// fecha en adelante. Lo anterior sigue intacto en `produccion`/`consumos_traza`,
+/// solo deja de listarse como pendiente (decisión 2026-10-26).
+final DateTime kConsumoPendientesDesde = DateTime(2026, 10, 26);
+
 /// Un ítem concreto del inventario, ya categorizado, listo para la pantalla
 /// de consumo. Para seriados se crea un ítem por número de serie.
 class ItemStockConsumo {
@@ -401,10 +406,19 @@ class TrazaConsumoService {
     required int mes,
     required int anno,
   }) async {
-    final inicio = DateTime(anno, mes, 1);
+    final inicioMes = DateTime(anno, mes, 1);
     final fin = DateTime(anno, mes + 1, 1);
+    // No listar antes del corte, aunque el mes consultado sea anterior.
+    final inicio = inicioMes.isBefore(kConsumoPendientesDesde)
+        ? kConsumoPendientesDesde
+        : inicioMes;
     String fecha(DateTime d) =>
         '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+    if (!inicio.isBefore(fin)) {
+      // Todo el mes consultado quedó antes del corte: no hay pendientes.
+      return const [];
+    }
 
     final rows = await _db
         .from('produccion')
