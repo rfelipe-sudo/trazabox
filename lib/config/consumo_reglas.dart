@@ -13,8 +13,10 @@
 ///   GRUPO completo (1 drop en total, obligatorio en altas y traslados).
 /// - ONT / IPTV (decos) / Extensores del Excel no se validan aquí: los
 ///   equipos seriados vienen SOLO LECTURA desde TOA (equipos_seriados_traza).
-/// - Cable coaxial y Conector F RG-6 (HFC) no vienen en el Excel: quedan
-///   visibles sin tope hasta que bodega los agregue a la receta.
+/// - Cambio 2026-11-17 (sobre el Excel): máximo Cable UTP 50 m y Grampa
+///   blanca 30 u, en las 3 recetas.
+/// - HFC fuera del consumo desde 2026-11-17: las actividades HFC no se listan
+///   y el material HFC (cable coaxial, conector F RG-6) no se ofrece.
 library;
 
 class ConsumoRegla {
@@ -64,9 +66,7 @@ const kCategoriasConsumo = <CategoriaMaterial>[
   CategoriaMaterial('Conector RJ45'),
   CategoriaMaterial('Micro USB'),
   CategoriaMaterial('Cable HDMI'),
-  // No seriados — HFC (sin tope en receta actual)
-  CategoriaMaterial('Cable coaxial'),
-  CategoriaMaterial('Conector F RG-6'),
+  // HFC (cable coaxial, conector F) retirado del consumo el 2026-11-17.
   // Seriados: las series NO las elige el técnico — vienen pre-cargadas
   // (solo lectura) desde lo registrado en TOA (equipos_seriados_traza).
   CategoriaMaterial('ONT ZTE', esSeriado: true),
@@ -120,10 +120,10 @@ const _reglasAltasMigracion = [
   ConsumoRegla(categoria: 'Micro USB', maximo: 1),
   ConsumoRegla(categoria: 'Pasacable negro', maximo: 2),
   ConsumoRegla(categoria: 'Pasacable blanco', maximo: 2),
-  ConsumoRegla(categoria: 'Cable UTP', maximo: 15),
+  ConsumoRegla(categoria: 'Cable UTP', maximo: 50),
   ConsumoRegla(categoria: 'Conector RJ45', maximo: 2),
   ConsumoRegla(categoria: 'Grampa negra', maximo: 10),
-  ConsumoRegla(categoria: 'Grampa blanca', maximo: 10),
+  ConsumoRegla(categoria: 'Grampa blanca', maximo: 30),
   ConsumoRegla(categoria: 'Cable HDMI', maximo: 3),
 ];
 
@@ -143,10 +143,10 @@ const _reglasTraslados = [
   ConsumoRegla(categoria: 'Micro USB', maximo: 1),
   ConsumoRegla(categoria: 'Pasacable negro', maximo: 2),
   ConsumoRegla(categoria: 'Pasacable blanco', maximo: 2),
-  ConsumoRegla(categoria: 'Cable UTP', maximo: 15),
+  ConsumoRegla(categoria: 'Cable UTP', maximo: 50),
   ConsumoRegla(categoria: 'Conector RJ45', maximo: 2),
   ConsumoRegla(categoria: 'Grampa negra', maximo: 10),
-  ConsumoRegla(categoria: 'Grampa blanca', maximo: 10),
+  ConsumoRegla(categoria: 'Grampa blanca', maximo: 30),
   ConsumoRegla(categoria: 'Cable HDMI', maximo: 3),
 ];
 
@@ -166,10 +166,10 @@ const _reglasReparacionesModificaciones = [
   ConsumoRegla(categoria: 'Micro USB', maximo: 1),
   ConsumoRegla(categoria: 'Pasacable negro', maximo: 2),
   ConsumoRegla(categoria: 'Pasacable blanco', maximo: 2),
-  ConsumoRegla(categoria: 'Cable UTP', maximo: 15),
+  ConsumoRegla(categoria: 'Cable UTP', maximo: 50),
   ConsumoRegla(categoria: 'Conector RJ45', maximo: 2),
   ConsumoRegla(categoria: 'Grampa negra', maximo: 10),
-  ConsumoRegla(categoria: 'Grampa blanca', maximo: 10),
+  ConsumoRegla(categoria: 'Grampa blanca', maximo: 30),
   ConsumoRegla(categoria: 'Cable HDMI', maximo: 3),
 ];
 

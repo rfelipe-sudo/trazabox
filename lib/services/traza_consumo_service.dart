@@ -301,21 +301,9 @@ class TrazaConsumoService {
     if (n.contains('MICRO USB')) return 'Micro USB';
     if (n.contains('HDMI')) return 'Cable HDMI';
 
-    // ── HFC (los técnicos TRAZA sí hacen coaxial) ──
-    // Nota: "CABLE COAXIAL ... RG-6" no debe caer en conector F.
-    if (n.contains('CABLE COAXIAL') ||
-        (n.contains('COAXIAL') && n.contains('RG'))) {
-      return 'Cable coaxial';
-    }
-    if (n.contains('CONECTOR') &&
-        (n.contains('RG6') || n.contains('RG-6') || n.contains(' F RG'))) {
-      return 'Conector F RG-6';
-    }
-    if (n.contains('CONECTOR') &&
-        n.contains('PPC') &&
-        n.contains('LOCKING')) {
-      return 'Conector F RG-6';
-    }
+    // ── HFC: fuera del consumo (2026-11-17) ──
+    // Ya no se declaran actividades HFC y el material coaxial no se ofrece en
+    // FTTH/NFTT: cable coaxial y conector F quedan sin categoría (ocultos).
 
     return null;
   }
@@ -399,6 +387,16 @@ class TrazaConsumoService {
 
   // ── OTs pendientes de consumo ─────────────────────────────────────────────
 
+  /// True si la orden es de red HFC (tecnologia HFC o tipo_red_producto
+  /// HFC/CHFC). Esas actividades no se muestran para declarar consumo.
+  static bool esActividadHfc(Map r) {
+    String v(String k) => (r[k]?.toString() ?? '').trim().toUpperCase();
+    return v('tecnologia') == 'HFC' ||
+        v('tipo_red') == 'HFC' ||
+        v('tipo_red_producto') == 'HFC' ||
+        v('tipo_red_producto') == 'CHFC';
+  }
+
   /// Órdenes completadas del técnico en el mes [mes]/[anno] que aún no
   /// tienen consumo declarado en `consumos_traza`.
   Future<List<OrdenPendienteConsumo>> obtenerOrdenesPendientesMes(
@@ -423,7 +421,7 @@ class TrazaConsumoService {
     final rows = await _db
         .from('produccion')
         .select(
-            'orden_trabajo, tipo_orden, tipo_actividad, fecha_trabajo, cliente, direccion, zona_trabajo')
+            'orden_trabajo, tipo_orden, tipo_actividad, fecha_trabajo, cliente, direccion, zona_trabajo, tecnologia, tipo_red_producto, tipo_red')
         .eq('rut_tecnico', rut)
         .eq('estado', 'Completado')
         .gte('fecha_trabajo', fecha(inicio))
@@ -459,6 +457,8 @@ class TrazaConsumoService {
       if (ot.isEmpty || vistas.contains(ot) || yaDeclaradas.contains(ot)) {
         continue;
       }
+      // Las actividades HFC ya no se declaran consumo (solo FTTH/NFTT).
+      if (esActividadHfc(r as Map)) continue;
       vistas.add(ot);
 
       // Preferir la tipificación MÁS específica entre tipo_orden y

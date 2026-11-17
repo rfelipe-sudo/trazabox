@@ -1209,6 +1209,13 @@ class ProduccionService {
       }
       if (mesConsulta < 1 || mesConsulta > 12) return 0;
 
+      // Rango del mes en el servidor: Supabase corta en 1.000 filas.
+      final mesIni =
+          '$annoConsulta-${mesConsulta.toString().padLeft(2, '0')}-01';
+      final mesSig = DateTime(annoConsulta, mesConsulta + 1, 1);
+      final mesFin =
+          '${mesSig.year}-${mesSig.month.toString().padLeft(2, '0')}-01';
+
       // 1. Por RUT (múltiples formatos)
       final variantesRut = rutVariantes(rut);
       List<dynamic> respRut = [];
@@ -1217,7 +1224,9 @@ class ProduccionService {
             .from('produccion')
             .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
             .inFilter('rut_tecnico', variantesRut)
-            .limit(10000) as List;
+            .gte('fecha_trabajo', mesIni)
+            .lt('fecha_trabajo', mesFin)
+            .limit(5000) as List;
       }
 
       // 2. Por nombre (datos legacy; ilike = case-insensitive)
@@ -1238,13 +1247,17 @@ class ProduccionService {
               .from('produccion')
               .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
               .ilike('tecnico', nombreTecnico)
-              .limit(10000) as List;
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000) as List;
         } catch (_) {
           respNombre = await _supabase
               .from('produccion')
               .select('orden_trabajo, fecha_trabajo, estado, area_derivacion')
               .eq('tecnico', nombreTecnico)
-              .limit(10000) as List;
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000) as List;
         }
       }
 
@@ -1876,6 +1889,15 @@ class ProduccionService {
       // BÚSQUEDA HÍBRIDA: Por RUT y por NOMBRE (fix para datos legacy)
       // ═══════════════════════════════════════════════════════════════════
       
+      // Rango del mes en el servidor (igual que obtenerResumenMesRGU): Supabase
+      // corta cada consulta en 1.000 filas aunque se pida más, y técnicos con
+      // mucho historial perdían días del mes (caso 14488110-9: solo 2 días).
+      final mesIni =
+          '$annoConsulta-${mesConsulta.toString().padLeft(2, '0')}-01';
+      final mesSig = DateTime(annoConsulta, mesConsulta + 1, 1);
+      final mesFin =
+          '${mesSig.year}-${mesSig.month.toString().padLeft(2, '0')}-01';
+
       // 1️⃣ Buscar por RUT (múltiples formatos)
       final variantesRut = rutVariantes(rutTecnico);
       List<dynamic> ordenesPorRut = [];
@@ -1884,7 +1906,9 @@ class ProduccionService {
             .from('produccion')
             .select()
             .inFilter('rut_tecnico', variantesRut)
-            .limit(10000);
+            .gte('fecha_trabajo', mesIni)
+            .lt('fecha_trabajo', mesFin)
+            .limit(5000);
         ordenesPorRut = responseRut as List? ?? [];
       }
 
@@ -1920,14 +1944,18 @@ class ProduccionService {
               .from('produccion')
               .select()
               .ilike('tecnico', nombreTecnico)
-              .limit(10000);
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000);
           ordenesPorNombre = responseNombre as List? ?? [];
         } catch (_) {
           final resp = await _supabase
               .from('produccion')
               .select()
               .eq('tecnico', nombreTecnico)
-              .limit(10000);
+              .gte('fecha_trabajo', mesIni)
+              .lt('fecha_trabajo', mesFin)
+              .limit(5000);
           ordenesPorNombre = resp as List? ?? [];
         }
       }
@@ -2157,31 +2185,35 @@ class ProduccionService {
     final mesConsulta = mes ?? now.month;
     final annoConsulta = anno ?? now.year;
 
-    final mesStr = mesConsulta.toString().padLeft(2, '0');
-    final annoStr = (annoConsulta % 100).toString().padLeft(2, '0');
-    final annoStr4 = annoConsulta.toString();
+    // fecha_trabajo es DATE: el filtro antiguo con LIKE fallaba en Postgres
+    // ("operator does not exist: date ~~ unknown") y el ranking salía vacío.
+    final mesIni = '$annoConsulta-${mesConsulta.toString().padLeft(2, '0')}-01';
+    final mesSig = DateTime(annoConsulta, mesConsulta + 1, 1);
+    final mesFin = '${mesSig.year}-${mesSig.month.toString().padLeft(2, '0')}-01';
 
     print('🔍 [Ranking] Calculando desde produccion — mes: $mesConsulta/$annoConsulta');
 
     try {
-      // Filtrar por mes/año (DD/MM/YY, DD/MM/YYYY, DD.MM.YY, DD.MM.YYYY, YYYY-MM-DD); traer Completado y No Realizada (GSA se filtra en cliente)
-      final filtroFecha = [
-        'fecha_trabajo.like.%/$mesStr/$annoStr',
-        'fecha_trabajo.like.%/$mesStr/$annoStr4',
-        'fecha_trabajo.like.%.$mesStr.$annoStr',
-        'fecha_trabajo.like.%.$mesStr.$annoStr4',
-        'fecha_trabajo.like.%$annoStr4-$mesStr-%', // YYYY-MM-DD
-      ].join(',');
       // Sin filtro de estado en servidor: traer todas las órdenes del mes y filtrar en cliente
       // (evita perder datos por variaciones de casing: Completado vs COMPLETADO, etc.)
-      final response = await _supabase
-          .from('produccion')
-          .select(
-              'rut_tecnico, tecnico, rgu_total, puntos_hfc, fecha_trabajo, estado, area_derivacion, tecnologia, tipo_red_producto')
-          .or(filtroFecha)
-          .limit(10000); // Evitar truncación del default de Supabase (1000)
+      // Paginado de a 1.000: Supabase corta cada respuesta en 1.000 filas
+      // aunque se pida más, y un mes completo supera las 12.000.
+      const pagina = 1000;
+      final response = <dynamic>[];
+      for (var desde = 0;; desde += pagina) {
+        final lote = await _supabase
+            .from('produccion')
+            .select(
+                'id, rut_tecnico, tecnico, rgu_total, puntos_hfc, fecha_trabajo, estado, area_derivacion, tecnologia, tipo_red_producto')
+            .gte('fecha_trabajo', mesIni)
+            .lt('fecha_trabajo', mesFin)
+            .order('id')
+            .range(desde, desde + pagina - 1) as List;
+        response.addAll(lote);
+        if (lote.length < pagina) break;
+      }
 
-      final ordenes = (response as List)
+      final ordenes = response
           .where((o) => cuentaComoProduccion(o))
           .map((o) => o as Map<String, dynamic>)
           .toList();
@@ -2815,20 +2847,17 @@ class ProduccionService {
       final now = DateTime.now();
       final mesConsulta = mes ?? now.month;
       final annoConsulta = anno ?? now.year;
-      final yy = annoConsulta.toString().substring(2);
-      final yy4 = annoConsulta.toString();
-      final mm = mesConsulta.toString().padLeft(2, '0');
-      final sufPunto = '.$mm.$yy';
-      final sufBarra = '/$mm/$yy';
-      final sufPunto4 = '.$mm.$yy4';
-      final sufBarra4 = '/$mm/$yy4';
-      final sufIso = '$yy4-$mm-%';
+      // fecha_trabajo es DATE: rango del mes (el LIKE antiguo fallaba en Postgres).
+      final mesIni = '$annoConsulta-${mesConsulta.toString().padLeft(2, '0')}-01';
+      final mesSig = DateTime(annoConsulta, mesConsulta + 1, 1);
+      final mesFin = '${mesSig.year}-${mesSig.month.toString().padLeft(2, '0')}-01';
 
       final response = await _supabase
           .from('produccion')
           .select('tipo_red_producto, tecnologia')
-          .eq('rut_tecnico', rutTecnico)
-          .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4,fecha_trabajo.like.%$sufIso')
+          .inFilter('rut_tecnico', rutVariantes(rutTecnico))
+          .gte('fecha_trabajo', mesIni)
+          .lt('fecha_trabajo', mesFin)
           .order('fecha_trabajo', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -2840,33 +2869,8 @@ class ProduccionService {
       }
       return response['tipo_red_producto']?.toString().trim();
     } catch (e) {
-      // Fallback: intentar solo tecnologia
-      try {
-        final now = DateTime.now();
-        final mesConsulta = mes ?? now.month;
-        final annoConsulta = anno ?? now.year;
-        final yy = annoConsulta.toString().substring(2);
-        final yy4 = annoConsulta.toString();
-        final mm = mesConsulta.toString().padLeft(2, '0');
-        final sufPunto = '.$mm.$yy';
-        final sufBarra = '/$mm/$yy';
-        final sufPunto4 = '.$mm.$yy4';
-        final sufBarra4 = '/$mm/$yy4';
-        final sufIso = '$yy4-$mm-%';
-
-        final response = await _supabase
-            .from('produccion')
-            .select('tecnologia')
-            .eq('rut_tecnico', rutTecnico)
-            .or('fecha_trabajo.ilike.%$sufPunto,fecha_trabajo.ilike.%$sufBarra,fecha_trabajo.ilike.%$sufPunto4,fecha_trabajo.ilike.%$sufBarra4,fecha_trabajo.like.%$sufIso')
-            .order('fecha_trabajo', ascending: false)
-            .limit(1)
-            .maybeSingle();
-
-        return response?['tecnologia']?.toString().trim();
-      } catch (_) {
-        return null;
-      }
+      print('⚠️ [Produccion] Error obteniendo tecnología: $e');
+      return null;
     }
   }
 
